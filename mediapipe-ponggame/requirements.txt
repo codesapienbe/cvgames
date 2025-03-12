@@ -1,5 +1,5 @@
 mediapipe==0.8.10
-Pillow==9.1.1
+Pillow==10.3.0
 pip==22.1.2
 protobuf==4.21.1
 jupyter-client==7.3.4
