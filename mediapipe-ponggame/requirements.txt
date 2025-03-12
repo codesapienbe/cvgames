@@ -1,6 +1,6 @@
 mediapipe==0.8.10
 Pillow==9.1.1
-pip==22.1.2
+pip==23.3
 protobuf==4.21.1
 jupyter-client==7.3.4
 jupyter-console==6.4.3
