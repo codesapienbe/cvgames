@@ -1,11 +1,35 @@
 # Main requirements file with latest stable versions
 
 # Core dependencies
-mediapipe>=0.10.0
-numpy>=1.24.0
+mediapipe>=0.10.21
 opencv-contrib-python>=4.8.0
 opencv-python>=4.8.0
 protobuf>=4.23.0
+wheel
+setuptools
+opencv-python
+deepface
+numpy<2
+matplotlib
+docker
+faiss-cpu
+scikit-learn
+keras
+torch>=1.9.0
+torchvision>=0.10.0
+dlib
+pandas
+tf-keras
+networkx
+python-dotenv
+argparse
+celery>=5.3.1
+psycopg2-binary>=2.9.3
+pgvector>=0.1.8
+sqlalchemy>=2.0.31
+redis>=5.0.0
+asyncpg>=0.26.0
+greenlet>=2.0.2
 
 # From mediapipe-hands
 absl-py>=1.4.0
@@ -104,7 +128,6 @@ python-dateutil>=2.8.2
 pytils>=0.4.1
 pytweening>=1.0.7
 pywin32-ctypes>=0.2.2
-# Windows-specific packages below - will be skipped on macOS
 pywin32>=306; platform_system=="Windows"
 pywinpty==2.0.5; platform_system=="Windows"
 pyzmq>=25.1.0
@@ -143,3 +166,4 @@ wrapt>=1.15.0
 # From mediapipe-volumectrl (additional packages)
 comtypes>=1.2.0
 pycaw>=20230301
+
