@@ -96,7 +96,8 @@ def extract_face_embeddings(img_path):
         objs = DeepFace.represent(
             img_path=img_path,
             model_name="Facenet",
-            enforce_detection=False
+            detector_backend="retinaface",
+            enforce_detection=True
         )
         
         result = []
@@ -375,7 +376,8 @@ def search_target_image(target_path, show_plots=False):
         objs = DeepFace.represent(
             img_path=target_path,
             model_name="Facenet",
-            enforce_detection=False
+            detector_backend="retinaface",
+            enforce_detection=True
         )
 
         if not objs:
