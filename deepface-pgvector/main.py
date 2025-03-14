@@ -1,5 +1,6 @@
 import base64
 import os
+import asyncio
 from deepface import DeepFace
 import psycopg2
 import cv2
@@ -13,7 +14,6 @@ import traceback
 import json
 import hashlib
 import uuid
-from celery import Celery
 from datetime import datetime
 
 logging.basicConfig(
@@ -39,19 +39,6 @@ db_params = {
     "user": "yilmaz"
 }
 
-# Configure Celery
-app = Celery('deepface_tasks',
-             broker='redis://localhost:6379/0',
-             backend='redis://localhost:6379/1')
-
-# Configure Celery to serialize tasks with JSON
-app.conf.update(
-    task_serializer='json',
-    accept_content=['json'],
-    result_serializer='json',
-    enable_utc=True,
-)
-
 def get_connection():
     """Get a database connection"""
     try:
@@ -61,7 +48,7 @@ def get_connection():
         logging.error(f"Error creating database connection: {str(e)}")
         raise
 
-def init_database():
+async def init_database():
     """Initialize the database with required tables and extensions"""
     conn = None
     cursor = None
@@ -96,7 +83,7 @@ def init_database():
             conn.close()
 
 
-def extract_face_embeddings(img_path):
+async def extract_face_embeddings(img_path):
     try:
         objs = DeepFace.represent(
             img_path=img_path,
@@ -118,7 +105,7 @@ def extract_face_embeddings(img_path):
         return []
 
 
-def capture_face_by_coordinates(img_path, coordinates):
+async def capture_face_by_coordinates(img_path, coordinates):
     """
     Safely extract a face from an image using coordinates
     
@@ -163,16 +150,16 @@ def capture_face_by_coordinates(img_path, coordinates):
         logging.error(f"Error capturing face from {img_path}: {str(e)}")
         return None
 
-def extract_faces_by_coordinates(img_path, faces):
+async def extract_faces_by_coordinates(img_path, faces):
     # extract faces by face coordinates from img_path, using opencv
     result = []
     for face in faces:
-        captured_face = capture_face_by_coordinates(img_path, face["facial_area"])
+        captured_face = await capture_face_by_coordinates(img_path, face["facial_area"])
         result.append(captured_face)
     return result
 
 
-def extract_faces_base64(img_path, objs):
+async def extract_faces_base64(img_path, objs):
     """
     Extract faces from image and convert to base64
     
@@ -202,7 +189,7 @@ def extract_faces_base64(img_path, objs):
                 logging.info(f"Processing face {i} with area: {facial_area}")
                 
                 # Capture the face from the image
-                face_img = capture_face_by_coordinates(img_path, facial_area)
+                face_img = await capture_face_by_coordinates(img_path, facial_area)
                 if face_img is None:
                     logging.warning(f"Failed to capture face {i} from {img_path}")
                     continue
@@ -238,7 +225,79 @@ def extract_faces_base64(img_path, objs):
         logging.error(traceback.format_exc())
         return ""
 
-def process_image(img_path, event_code):
+async def calculate_image_checksum(img_path):
+    """
+    Calculate SHA-256 checksum of image content
+    
+    Args:
+        img_path: Path to the image
+        
+    Returns:
+        str: Hex digest of SHA-256 hash of image content
+    """
+    try:
+        with open(img_path, 'rb') as f:
+            file_content = f.read()
+            return hashlib.sha256(file_content).hexdigest()
+    except Exception as e:
+        logging.error(f"Error calculating checksum for {img_path}: {str(e)}")
+        # Fallback to path-based checksum
+        return hashlib.sha256(img_path.encode()).hexdigest()
+
+async def image_already_processed(img_path, event_code):
+    """
+    Check if image has already been processed by looking for matching name and checksum
+    
+    Args:
+        img_path: Path to the image
+        event_code: Event code for the image
+        
+    Returns:
+        bool: True if image is already in the database, False otherwise
+    """
+    conn = None
+    cursor = None
+    
+    try:
+        # Generate checksum for the image content
+        checksum = await calculate_image_checksum(img_path)
+        img_name = os.path.basename(img_path)
+        
+        logging.info(f"Checking if image {img_name} with checksum {checksum} exists in database")
+        
+        # Check database for this image
+        conn = get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute(
+            """
+            SELECT COUNT(*) FROM identities 
+            WHERE img_name = %s AND checksum_sha256 = %s AND event_code = %s
+            """, 
+            (img_name, checksum, event_code)
+        )
+        
+        count = cursor.fetchone()[0]
+        exists = count > 0
+        
+        if exists:
+            logging.info(f"Found {count} existing records for image {img_name}")
+        else:
+            logging.info(f"No existing records found for image {img_name}")
+            
+        return exists
+        
+    except Exception as e:
+        logging.error(f"Error checking if image {img_path} is already processed: {str(e)}")
+        logging.error(traceback.format_exc())
+        return False
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+async def process_image(img_path, event_code):
     conn = None
     cursor = None
     
@@ -249,13 +308,18 @@ def process_image(img_path, event_code):
         logging.error(f"Image not found: {img_path}")
         return -1
     
-    if not has_face(img_path):
+    # Check if image is already processed
+    if await image_already_processed(img_path, event_code):
+        logging.info(f"Image {img_path} already processed, skipping")
+        return 0
+    
+    if not await has_face(img_path):
         logging.info(f"No faces found in {img_path}")
         return 0
 
     try:
         # Extract face embeddings
-        objs = extract_face_embeddings(img_path)
+        objs = await extract_face_embeddings(img_path)
         if not objs:
             logging.info(f"No faces found in {img_path} by DeepFace")
             return -1
@@ -264,6 +328,10 @@ def process_image(img_path, event_code):
         
         conn = get_connection()
         cursor = conn.cursor()
+
+        # Generate checksum once for this image based on content
+        checksum = await calculate_image_checksum(img_path)
+        img_name = os.path.basename(img_path)
 
         for i, obj in enumerate(objs):
             # Get specific embedding for this face
@@ -275,7 +343,7 @@ def process_image(img_path, event_code):
                 continue
                 
             # Extract the specific face as base64
-            face_img = capture_face_by_coordinates(img_path, obj["facial_area"])
+            face_img = await capture_face_by_coordinates(img_path, obj["facial_area"])
             if face_img is None:
                 logging.warning(f"Failed to capture face {i} from {img_path}, skipping")
                 continue
@@ -295,17 +363,18 @@ def process_image(img_path, event_code):
             
             # Generate a unique ID for this face
             face_id = uuid.uuid4()
-            checksum = hashlib.sha256(img_path.encode()).hexdigest()
             
-            # Insert this face and its embedding
-            statement = f"""
+            # Use parameterized query instead of string formatting for consistency
+            cursor.execute(
+                """
                 INSERT INTO identities
                     (id, event_code, img_name, embedding, faces_base64, checksum_sha256)
                     VALUES
-                    ('{face_id}', '{event_code}', '{os.path.basename(img_path)}', '{str(embedding)}', '{face_base64}', '{checksum}')
-            """
+                    (%s, %s, %s, %s, %s, %s)
+                """,
+                (str(face_id), event_code, img_name, str(embedding), face_base64, checksum)
+            )
             
-            cursor.execute(statement)
             logging.info(f"Inserting face #{i+1} (ID: {face_id}) from {img_path} into identities table")
             face_count += 1
             
@@ -326,18 +395,16 @@ def process_image(img_path, event_code):
     return face_count
 
 
-def process_images_from_dir(source_dir="events", use_celery=True, batch_size=10):
+async def process_images_from_dir(source_dir="events"):
     """
     Process all images from a directory and save the embeddings to the database
     
     Args:
         source_dir: Directory containing images to process
-        use_celery: Whether to use Celery tasks (default: True)
-        batch_size: Number of images to process per Celery task (default: 10)
     """
     # Initialize database
     try:
-        init_database()
+        await init_database()
     except Exception as e:
         logging.error(f"Failed to initialize database: {str(e)}")
         return 0
@@ -356,68 +423,26 @@ def process_images_from_dir(source_dir="events", use_celery=True, batch_size=10)
         logging.warning(f"No image files found in {source_dir}")
         return 0
     
-    # Process files with Celery or sequentially
+    # Process files sequentially but asynchronously
     total_faces = 0
     processed_images = 0
     skipped_images = 0
     event_code = source_dir.split("/")[-1]
     
-    if use_celery:
-        # Process using Celery tasks in batches
-        logging.info(f"Processing images using Celery tasks with batch size of {batch_size}")
+    # Process sequentially
+    for i, img_path in enumerate(tqdm(image_files, desc="Processing images")):
+        face_count = await process_image(img_path, event_code)
+        if face_count == -1:  # Error occurred
+            skipped_images += 1
+            logging.info(f"Skipped image {i+1}/{total_files} - No faces detected: {img_path}")
+            continue
         
-        # Split images into batches
-        batches = [image_files[i:i+batch_size] for i in range(0, len(image_files), batch_size)]
-        logging.info(f"Created {len(batches)} batches from {total_files} images")
+        total_faces += face_count
+        processed_images += 1
+        logging.info(f"Processed image {i+1}/{total_files} with {face_count} faces: {img_path}")
         
-        results = []
-        
-        # Submit batch tasks
-        for batch_idx, batch in enumerate(tqdm(batches, desc="Submitting batch tasks")):
-            logging.info(f"Submitting batch {batch_idx+1}/{len(batches)} with {len(batch)} images")
-            task = process_image_batch.delay(batch, event_code)
-            results.append(task)
-        
-        # Wait for all batch tasks to complete
-        logging.info("Waiting for batch tasks to complete...")
-        batch_results = {}
-        
-        for i, result in enumerate(tqdm(results, desc="Processing batches")):
-            try:
-                # 30-minute timeout per batch (3 minutes per image × 10 images)
-                batch_result = result.get(timeout=1800)
-                batch_results.update(batch_result)
-                logging.info(f"Completed batch {i+1}/{len(results)}")
-            except Exception as e:
-                logging.error(f"Batch task {i+1}/{len(results)} failed: {str(e)}")
-        
-        # Process the results from all batches
-        for img_path, face_count in batch_results.items():
-            if face_count == -1:  # Error occurred
-                skipped_images += 1
-                logging.info(f"Failed to process image: {img_path}")
-            elif face_count == 0:  # No faces found
-                skipped_images += 1
-                logging.info(f"Skipped image - No faces detected: {img_path}")
-            else:
-                total_faces += face_count
-                processed_images += 1
-                logging.info(f"Processed image with {face_count} faces: {img_path}")
-    else:
-        # Process sequentially
-        for i, img_path in enumerate(tqdm(image_files, desc="Processing images")):
-            face_count = process_image(img_path, event_code)
-            if face_count == -1:  # No faces found in image
-                skipped_images += 1
-                logging.info(f"Skipped image {i+1}/{total_files} - No faces detected: {img_path}")
-                continue
-            
-            total_faces += face_count
-            processed_images += 1
-            logging.info(f"Processed image {i+1}/{total_files} with {face_count} faces: {img_path}")
-            
-            # Force garbage collection after each image
-            gc.collect()
+        # Force garbage collection after each image
+        gc.collect()
     
     logging.info(f"Processing summary:")
     logging.info(f"- Total images: {total_files}")
@@ -454,7 +479,7 @@ def process_images_from_dir(source_dir="events", use_celery=True, batch_size=10)
     return total_faces
 
 
-def show_target_image(target_path):
+async def show_target_image(target_path):
     """Display the target image"""
     logging.info(f"Loading target image: {target_path}")
     target_img = cv2.imread(target_path)
@@ -468,7 +493,7 @@ def show_target_image(target_path):
 
 
 
-def has_face(img_path):
+async def has_face(img_path):
     """
     Detect if an image has faces using OpenCV - used for quick screening
     Note: This function is now primarily for quick screening, actual face
@@ -502,7 +527,7 @@ def has_face(img_path):
         logging.error(f"Error processing {img_path}: {e}")
         return False
 
-def search_target_image(target_path, show_plots=False):
+async def search_target_image(target_path, show_plots=False):
     """
     Search for matches to the target image in the database
     
@@ -524,7 +549,7 @@ def search_target_image(target_path, show_plots=False):
         "message": ""
     }
 
-    target_has_face = has_face(target_path)
+    target_has_face = await has_face(target_path)
     if not target_has_face:
         msg = f"No faces detected in target image: {target_path}"
         logging.error(msg)
@@ -563,7 +588,6 @@ def search_target_image(target_path, show_plots=False):
             ) a
             WHERE distance < 10
             ORDER BY distance ASC
-            LIMIT 10
             """
         )
 
@@ -619,132 +643,8 @@ def search_target_image(target_path, show_plots=False):
     return result_dict
 
 
-def cleanup_connections():
-    """No longer needed as we're not using a connection pool"""
-    logging.info("Cleanup not needed - using individual connections")
-
-
-def parse_arguments():
-    """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description="DeepFace with PGVector for face recognition and search")
-    
-    parser.add_argument("--save", action="store_true", 
-                        help="Process images and save embeddings to database")
-    
-    parser.add_argument("--source", type=str, default="events", 
-                        help="Source directory containing images to process (default: events)")
-    
-    parser.add_argument("--target", type=str, 
-                        help="Target image to search for or display")
-    
-    parser.add_argument("--search", action="store_true", 
-                        help="Search for the target image in the database")
-                        
-    parser.add_argument("--show", action="store_true",
-                        help="Show plots when searching (default: False, returns JSON)")
-    
-    parser.add_argument("--init", action="store_true",
-                        help="Initialize the database")
-                        
-    parser.add_argument("--no-celery", action="store_true",
-                        help="Disable Celery task processing and use sequential processing")
-    
-    return parser.parse_args()
-
-
-@app.task
-def extract_face_embeddings_task(img_path):
-    """Celery task version of extract_face_embeddings"""
-    return extract_face_embeddings(img_path)
-
-@app.task
-def process_image_batch(img_paths, event_code):
-    """
-    Celery task to process a batch of images
-    
-    Args:
-        img_paths: List of image paths to process
-        event_code: Event code for database insertion
-        
-    Returns:
-        dict: Dictionary with processing results for each image
-    """
-    results = {}
-    batch_info = {
-        'batch_size': len(img_paths),
-        'event_code': event_code,
-        'started_at': datetime.now().isoformat(),
-        'images': []
-    }
-    
-    logging.info(f"Processing batch of {len(img_paths)} images")
-    
-    for img_path in img_paths:
-        start_time = time.time()
-        image_info = {
-            'image_path': img_path,
-            'start_time': datetime.now().isoformat()
-        }
-        
-        try:
-            face_count = process_image(img_path, event_code)
-            processing_time = round(time.time() - start_time, 2)
-            
-            image_info.update({
-                'status': 'success' if face_count > 0 else 'skipped',
-                'face_count': face_count if face_count > 0 else 0,
-                'processing_time_seconds': processing_time
-            })
-            
-            results[img_path] = face_count
-            
-        except Exception as e:
-            error_msg = str(e)
-            processing_time = round(time.time() - start_time, 2)
-            
-            image_info.update({
-                'status': 'error',
-                'error': error_msg,
-                'processing_time_seconds': processing_time
-            })
-            
-            results[img_path] = -1
-            logging.error(f"Error processing {img_path} in batch: {error_msg}")
-        
-        batch_info['images'].append(image_info)
-        gc.collect()  # Force garbage collection after each image
-    
-    batch_info['total_processing_time'] = sum(img['processing_time_seconds'] for img in batch_info['images'])
-    batch_info['completed_at'] = datetime.now().isoformat()
-    
-    # Log the complete batch information
-    log_to_json(batch_info)
-    
-    return results
-
-@app.task
-def search_face_task(target_path):
-    """Celery task for face search without displaying plots"""
-    return search_target_image(target_path, show_plots=False)
-
-def check_celery_worker_status():
-    """Check if Celery worker is running and available"""
-    try:
-        # Send a simple task to check if workers are available
-        from celery.task.control import inspect
-        insp = inspect()
-        availability = insp.ping()
-        if not availability:
-            logging.warning("No Celery workers are available! Starting in fallback mode.")
-            return False
-        logging.info(f"Celery workers available: {list(availability.keys())}")
-        return True
-    except Exception as e:
-        logging.warning(f"Could not check for Celery workers: {str(e)}. Starting in fallback mode.")
-        return False
-
 # JSON logging for debugging face detection
-def log_to_json(data):
+async def log_to_json(data):
     """Log data to a JSON file for debugging"""
     log_file = "face_detection_log.json"
     
@@ -768,54 +668,29 @@ def log_to_json(data):
     with open(log_file, 'w') as f:
         json.dump(existing_data, f, indent=2)
 
-if __name__ == "__main__":
+async def main():
     args = parse_arguments()
     
     try:
-        # Check if Celery workers are available if needed
-        use_celery = not args.no_celery
-        if use_celery:
-            use_celery = check_celery_worker_status()
-            if not use_celery:
-                logging.warning("Falling back to sequential processing (no Celery workers available)")
-
         # Process images and save to database
         if args.save:
             logging.info(f"Processing images from source directory: {args.source}")
-            # Use a batch size of 10 images per worker
-            process_images_from_dir(source_dir=args.source, use_celery=use_celery, batch_size=10)
+            await process_images_from_dir(source_dir=args.source)
         
         # Handle target image operations
         if args.target:
             if os.path.exists(args.target):
                 if args.search:
-                    if not use_celery:
-                        # Search directly
-                        logging.info("Searching directly (without Celery)...")
-                        results = search_target_image(args.target, show_plots=args.show)
-                    else:
-                        # Search using Celery
-                        logging.info("Submitting search task to Celery...")
-                        task = search_face_task.delay(args.target)
-                        logging.info("Waiting for search results (this may take a few minutes)...")
-                        try:
-                            # Increase timeout to 5 minutes for search operations
-                            results = task.get(timeout=300)
-                        except TimeoutError:
-                            logging.error("Search task timed out after 5 minutes. Try again with --no-celery option.")
-                            print("ERROR: Search task timed out. Try running without Celery: --no-celery")
-                            exit(1)
-                        except Exception as e:
-                            logging.error(f"Error in Celery task: {str(e)}")
-                            print(f"ERROR: Celery task failed: {str(e)}. Try running without Celery: --no-celery")
-                            exit(1)
+                    # Search directly
+                    logging.info("Searching directly...")
+                    results = await search_target_image(args.target, show_plots=args.show)
                     
                     # If not showing plots, print the JSON results
                     if not args.show:
                         print(json.dumps(results, indent=2))
                 else:
                     # Just display the target image
-                    show_target_image(args.target)
+                    await show_target_image(args.target)
             else:
                 logging.error(f"Target image not found: {args.target}")
                 
@@ -825,10 +700,40 @@ if __name__ == "__main__":
             logging.info("Run with --help for more information.")
 
         if args.init:
-            init_database()
+            await init_database()
             
     except KeyboardInterrupt:
         logging.info("Process interrupted by user")
     except Exception as e:
         logging.error(f"Unexpected error: {str(e)}")
         logging.error(traceback.format_exc())
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description="DeepFace with PGVector for face recognition and search")
+    
+    parser.add_argument("--save", action="store_true", 
+                        help="Process images and save embeddings to database")
+    
+    parser.add_argument("--source", type=str, default="events", 
+                        help="Source directory containing images to process (default: events)")
+    
+    parser.add_argument("--target", type=str, 
+                        help="Target image to search for or display")
+    
+    parser.add_argument("--search", action="store_true", 
+                        help="Search for the target image in the database")
+                        
+    parser.add_argument("--show", action="store_true",
+                        help="Show plots when searching (default: False, returns JSON)")
+    
+    parser.add_argument("--init", action="store_true",
+                        help="Initialize the database")
+    
+    return parser.parse_args()
+
+if __name__ == "__main__":
+    args = parse_arguments()
+    
+    # Run the async main
+    asyncio.run(main())

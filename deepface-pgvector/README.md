@@ -1,3 +1,115 @@
+# DeepFace with PGVector
+
+Face recognition and search system using DeepFace and PostgreSQL with pgvector.
+
+## Requirements
+
+- Python 3.8+
+- PostgreSQL with pgvector extension
+- Redis server (for Celery task queue)
+
+## Installation
+
+1. Install required Python packages:
+   ```bash
+   pip install deepface psycopg2-binary opencv-python matplotlib tqdm celery redis
+   ```
+
+2. Make sure PostgreSQL with pgvector extension is installed and running.
+
+3. Make sure Redis is installed and running:
+   ```bash
+   # Check if Redis is running
+   redis-cli ping
+   
+   # Start Redis if not running
+   brew services start redis  # Mac
+   # or
+   sudo systemctl start redis  # Linux
+   ```
+
+## High-Performance Processing with Multiple Workers
+
+For optimal performance when processing large image sets, we recommend using multiple Celery workers. The included script makes this easy:
+
+```bash
+# Make the script executable
+chmod +x run_workers.sh
+
+# Start 8 Celery workers (32 processing threads total)
+./run_workers.sh
+```
+
+You can adjust the number of workers by editing the `NUM_WORKERS` variable in the script. By default, it starts 8 workers, each with 4 processing threads, for a total of 32 concurrent processing threads.
+
+## Usage
+
+### Process Images and Save Embeddings
+
+```bash
+# Process all images in the 'events' directory using Celery workers
+python main.py --save --source events
+
+# Process images without Celery (slower, sequential processing)
+python main.py --save --source events --no-celery
+```
+
+### Search for a Target Image
+
+```bash
+# Search for a target image and show results as JSON
+python main.py --target /path/to/target.jpg --search
+
+# Search and display visual results
+python main.py --target /path/to/target.jpg --search --show
+```
+
+### Initialize Database
+
+```bash
+python main.py --init
+```
+
+## Monitoring Celery Workers
+
+Monitor the status of workers:
+```bash
+celery -A main status
+```
+
+View logs for a specific worker:
+```bash
+tail -f celery_worker1.log
+```
+
+Stop all workers:
+```bash
+pkill -f 'celery -A main worker'
+```
+
+## Performance Optimization
+
+This system uses a multi-level approach to parallel processing:
+
+1. **Multiple Celery worker processes** - Each worker process handles batches of images
+2. **Thread-level parallelism** - Each worker uses 4 threads to process images within a batch
+3. **Batch processing** - Images are processed in batches of 10 for efficient distribution
+
+For the best performance on a multi-core system, use 8 or more worker processes.
+
+## Troubleshooting
+
+If you encounter errors, check:
+
+1. PostgreSQL and Redis are running
+2. The database has the pgvector extension installed
+3. Celery workers are running (check with `celery -A main status`)
+4. The logs for detailed error messages (`*.log` files)
+
+## Advanced Configuration
+
+Edit the `db_params` dictionary in `main.py` to configure your PostgreSQL connection.
+
 # DeepFace with PGVector and Celery
 
 This application uses DeepFace for face recognition, PostgreSQL with pgvector for vector storage, and Celery with Redis for distributed task processing.
