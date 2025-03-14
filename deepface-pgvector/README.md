@@ -1,3 +1,103 @@
+# DeepFace with PGVector and Celery
+
+This application uses DeepFace for face recognition, PostgreSQL with pgvector for vector storage, and Celery with Redis for distributed task processing.
+
+## Prerequisites
+
+- Python 3.8+
+- PostgreSQL with pgvector extension
+- Redis (for Celery message broker)
+
+## Installation
+
+1. Install Python dependencies:
+```
+pip install deepface psycopg2-binary opencv-python matplotlib tqdm celery redis
+```
+
+2. Make sure Redis is running:
+```
+redis-cli ping
+```
+Should return `PONG`
+
+3. Make sure PostgreSQL is running with pgvector extension installed
+
+## Running with Celery
+
+### Step 1: Start Celery Workers
+
+In one terminal, start Celery workers:
+
+```
+cd deepface-pgvector
+python celery_worker.py
+```
+
+Alternatively, you can use the standard Celery command directly:
+```
+celery -A celery_worker worker --loglevel=info
+```
+
+You can start multiple workers on different terminals to increase processing power.
+
+### Step 2: Run the Main Application
+
+In another terminal, run the application:
+
+```
+# Process images and save embeddings to database (using Celery)
+python main.py --save --source ./events/YOUR_EVENT_FOLDER
+
+# Search for matches to a target image (using Celery)
+python main.py --target ./path/to/image.jpg --search
+```
+
+### Fallback to Sequential Processing
+
+If Celery workers aren't available or you encounter problems, you can disable Celery:
+
+```
+# Without Celery (sequential processing)
+python main.py --save --source ./events/YOUR_EVENT_FOLDER --no-celery
+
+# Search without Celery
+python main.py --target ./path/to/image.jpg --search --no-celery
+```
+
+## Troubleshooting Celery
+
+If you encounter issues with Celery:
+
+1. Check that Redis is running: `redis-cli ping`
+2. Verify Celery workers are running: look for "Starting Celery worker" message
+3. Try running with `--no-celery` flag to bypass Celery completely
+4. Check the logs in `celery_worker.log` and `deepface_processing.log`
+5. Increase timeout if tasks are taking too long (modify timeout in main.py)
+
+Common issues:
+- Timeout errors: Tasks are taking longer than the timeout period
+- Connection errors: Redis may not be running or accessible
+- Worker not available: Celery worker process may not be running
+
+## Command Line Arguments
+
+- `--save`: Process images and save embeddings to database
+- `--source`: Source directory containing images to process (default: events)
+- `--target`: Target image to search for or display
+- `--search`: Search for the target image in the database
+- `--show`: Show plots when searching (default: False, returns JSON)
+- `--init`: Initialize the database
+- `--no-celery`: Disable Celery task processing and use sequential processing
+
+## Performance Considerations
+
+- Using Celery allows for parallel processing of images, which can significantly improve performance
+- Redis is used as the message broker and result backend for Celery
+- Each image is processed as a separate task, allowing for better resource utilization
+- Face detection and embedding extraction are computationally intensive operations
+- The application automatically checks for Celery worker availability and falls back to sequential processing if needed
+
 # 😎 Face Finder 🔍🤳
 
 This is a cool computer program that can find faces in pictures and remember them! It's like teaching your computer to recognize your friends. ✨🧠💻
