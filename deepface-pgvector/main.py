@@ -1,315 +1,546 @@
-import datetime
-import tensorflow as tf
-from tensorflow.keras.callbacks import TensorBoard
-from deepface import DeepFace
-from sqlalchemy import create_engine, Column, Integer, inspect
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.declarative import declarative_base
-from pgvector.sqlalchemy import Vector
-import argparse
-import sqlalchemy
-import time  # Add time module for measuring execution time
 import os
-import numpy as np  # Add this import
+from deepface import DeepFace
+import psycopg2
+from psycopg2 import pool
+import cv2
+import matplotlib.pyplot as plt
+from tqdm import tqdm 
+import time
+import logging
+import argparse
+import concurrent.futures
+from threading import Lock, Semaphore
+import gc
+import traceback
+import json
 
-log_dir = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-tensorboard_callback = TensorBoard(log_dir=log_dir, histogram_freq=1)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("deepface_processing.log"),
+        logging.StreamHandler()
+    ]
+)
 
-Base = declarative_base()
+# Create a connection pool instead of a single connection
+try:
+    connection_pool = pool.ThreadedConnectionPool(
+        minconn=5,
+        maxconn=20,
+        host="localhost",
+        port="5432",
+        database="postgres",
+        user="yilmaz"
+    )
+    logging.info("Connection pool created successfully")
+except Exception as e:
+    logging.error(f"Error creating connection pool: {str(e)}")
+    raise
 
-class FaceEmbedding(Base):
-    __tablename__ = 'face_embeddings'
-    id = Column(Integer, primary_key=True)
-    embedding = Column(Vector(512))  # ArcFace also uses 512 dimensions
-    image_path = Column(sqlalchemy.String(255))
+# Create a semaphore to limit concurrent DeepFace operations
+# This helps prevent segmentation faults by limiting concurrent access to computational resources
+deepface_semaphore = Semaphore(2)  # Limit to 2 concurrent DeepFace operations
 
-# Change the database connection URL from asyncpg to psycopg2
-engine = create_engine('postgresql+psycopg2://yilmaz@localhost/postgres')
-
-# Only create tables if they don't exist, otherwise update schema
-inspector = inspect(engine)
-if not inspector.has_table('face_embeddings'):
-    Base.metadata.create_all(engine)
-else:
-    # Check if column exists and add it if not
-    columns = [col['name'] for col in inspector.get_columns('face_embeddings')]
-    if 'image_path' not in columns:
-        # Use raw SQL for adding the column - more compatible across SQLAlchemy versions
-        with engine.connect() as conn:
-            conn.execute(sqlalchemy.text(
-                "ALTER TABLE face_embeddings ADD COLUMN image_path VARCHAR(255)"
-            ))
-            conn.commit()
-
-Session = sessionmaker(bind=engine)
-session = Session()
-
-def save_face_embedding(image_path, detector_backend='mtcnn', model_name='Facenet512'):
-    """Save face embeddings with optimized detection parameters"""
-    print(f"Processing image: {image_path}")
-    print(f"Using detector: {detector_backend}")
-    print(f"Using model: {model_name}")
-    
-    # Try with requested model first
+# Initialize database tables
+def init_database():
+    """Initialize the database with required tables and extensions"""
+    conn = None
+    cursor = None
     try:
-        results = DeepFace.represent(
-            img_path=image_path, 
-            model_name=model_name,
-            enforce_detection=False,
-            detector_backend=detector_backend
-        )
+        conn = connection_pool.getconn()
+        cursor = conn.cursor()
+        
+        # Create vector extension
+        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        
+        # Drop and recreate identities table
+        cursor.execute("DROP TABLE IF EXISTS identities;")
+        cursor.execute("""
+            CREATE TABLE identities (
+            ID INT PRIMARY KEY,
+            IMG_NAME VARCHAR(100),
+            embedding vector(128));
+        """)
+        
+        conn.commit()
+        logging.info("Database initialized successfully")
     except Exception as e:
-        print(f"Error with {model_name} model: {str(e)}")
-        
-        # If model fails, try Facenet512 as fallback
-        if model_name != 'Facenet512':
-            print(f"Falling back to Facenet512 model...")
-            try:
-                results = DeepFace.represent(
-                    img_path=image_path,
-                    model_name='Facenet512',
-                    enforce_detection=False,
-                    detector_backend=detector_backend
-                )
-                model_name = 'Facenet512'  # Update model name for later use
-            except Exception as e2:
-                print(f"Facenet512 model failed: {str(e2)}")
-                # Final fallback - try OpenCV detector with Facenet512
-                try:
-                    results = DeepFace.represent(
-                        img_path=image_path,
-                        model_name='Facenet512',
-                        enforce_detection=False,
-                        detector_backend='opencv'
-                    )
-                    model_name = 'Facenet512'
-                    detector_backend = 'opencv'
-                except Exception as e3:
-                    print(f"All attempts failed. Final error: {str(e3)}")
-                    return
-        else:
-            # Try OpenCV detector as fallback
-            try:
-                results = DeepFace.represent(
-                    img_path=image_path,
-                    model_name=model_name,
-                    enforce_detection=False,
-                    detector_backend='opencv'
-                )
-                detector_backend = 'opencv'
-            except Exception as e2:
-                print(f"All attempts failed. Final error: {str(e2)}")
-                return
-    
-    # Check if we got any results
-    if not results:
-        print(f"No faces detected in {image_path}")
-        return
-        
-    # Count how many faces were found
-    face_count = len(results)
-    print(f"Found {face_count} faces in {image_path}")
-    
-    # Save each face embedding to the database
-    for i, result in enumerate(results):
-        embedding = result['embedding']
-        face_info = f"{image_path} (face {i+1}/{face_count})"
-        new_face = FaceEmbedding(embedding=embedding, image_path=face_info)
-        
-        # Measure database insertion time
-        start_time = time.time()
-        session.add(new_face)
-        session.commit()
-        end_time = time.time()
-        
-        # Calculate elapsed time in milliseconds
-        elapsed_ms = (end_time - start_time) * 1000
-        print(f"  Face {i+1}: Database insertion took {elapsed_ms:.2f} ms")
-    
-    print(f"Saved {face_count} face embeddings to database")
+        if conn:
+            conn.rollback()
+        logging.error(f"Error initializing database: {str(e)}")
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            connection_pool.putconn(conn)
 
-def find_similar_face(query_image_path, threshold=0.9, detector_backend='mtcnn', 
-                      min_similarity=80.0, model_name='Facenet512'):
+
+def extract_face_embeddings(img_path):
     """
-    Find similar faces in the database with advanced matching parameters.
+    Extract face embeddings from an image using DeepFace
     
-    Parameters:
-        query_image_path (str): Path to the query image
-        threshold (float): Base similarity threshold (0-1)
-        detector_backend (str): Face detection backend
-        min_similarity (float): Minimum similarity percentage (0-100) for matches
-        model_name (str): Face recognition model to use
+    This function is separated to use a semaphore for limiting concurrent DeepFace operations
     """
-    # Get embeddings for all faces in the query image
-    print(f"Analyzing image: {query_image_path}")
-    print(f"Using detector: {detector_backend}")
-    print(f"Using model: {model_name}")
-    print(f"Required minimum similarity: {min_similarity}%")
-    
-    # Try with requested model first
     try:
-        results = DeepFace.represent(
-            img_path=query_image_path,
-            model_name=model_name,
-            enforce_detection=False,
-            detector_backend=detector_backend
-        )
+        # Use a semaphore to limit concurrent DeepFace operations
+        with deepface_semaphore:
+            objs = DeepFace.represent(
+                img_path=img_path,
+                model_name="Facenet",
+                enforce_detection=False
+            )
+            
+            # Create a copy of the results to avoid memory issues
+            result = []
+            for obj in objs:
+                result.append(obj.copy())
+            
+            # Force garbage collection to free memory
+            gc.collect()
+            
+            return result
     except Exception as e:
-        print(f"Error with {model_name} model: {str(e)}")
-        
-        # If model fails, try Facenet512 as fallback
-        if model_name != 'Facenet512':
-            print(f"Falling back to Facenet512 model...")
-            try:
-                results = DeepFace.represent(
-                    img_path=query_image_path,
-                    model_name='Facenet512',
-                    enforce_detection=False,
-                    detector_backend=detector_backend
-                )
-                model_name = 'Facenet512'  # Update model name for later use
-            except Exception as e2:
-                print(f"Facenet512 model failed: {str(e2)}")
-                # Final fallback - try OpenCV detector with Facenet512
-                try:
-                    results = DeepFace.represent(
-                        img_path=query_image_path,
-                        model_name='Facenet512',
-                        enforce_detection=False,
-                        detector_backend='opencv'
-                    )
-                    model_name = 'Facenet512'
-                    detector_backend = 'opencv'
-                except Exception as e3:
-                    print(f"All attempts failed. Final error: {str(e3)}")
-                    return
-        else:
-            # Try OpenCV detector as fallback
-            try:
-                results = DeepFace.represent(
-                    img_path=query_image_path,
-                    model_name=model_name,
-                    enforce_detection=False,
-                    detector_backend='opencv'
-                )
-                detector_backend = 'opencv'
-            except Exception as e2:
-                print(f"All attempts failed. Final error: {str(e2)}")
-                return
+        logging.error(f"Error extracting face embeddings from {img_path}: {str(e)}")
+        logging.error(traceback.format_exc())
+        return []
+
+
+def process_image(img_path, start_idx):
+    """
+    Process a single image file, extract face embeddings and save to database
     
-    if not results:
-        print(f"No faces detected in {query_image_path}")
+    Args:
+        img_path: Path to the image file
+        start_idx: Starting index for face IDs from this image
+        
+    Returns:
+        tuple: (number of faces processed, list of face IDs)
+    """
+    conn = None
+    cursor = None
+    logging.info(f"Processing image: {img_path}")
+    face_count = 0
+    face_ids = []
+    
+    try:
+        # Extract face embeddings with limited concurrency
+        objs = extract_face_embeddings(img_path)
+        
+        if not objs:
+            logging.info(f"No faces found in {img_path}")
+            return face_count, face_ids
+            
+        logging.info(f"Found {len(objs)} faces in {img_path}")
+        
+        # Get a connection from the pool
+        conn = connection_pool.getconn()
+        cursor = conn.cursor()
+        
+        # Process each face in the image
+        for i, obj in enumerate(objs):
+            embedding = obj["embedding"]
+            face_id = start_idx + i
+            face_ids.append(face_id)
+            
+            statement = f"""
+                INSERT INTO identities
+                    (id, img_name, embedding)
+                    VALUES
+                    ({face_id}, '{img_path}', '{str(embedding)}')
+            """
+            
+            cursor.execute(statement)
+            logging.info(f"Inserting face #{face_id} from {img_path} into identities table")
+            face_count += 1
+            
+        # Commit after all faces from this image are processed
+        conn.commit()
+        logging.info(f"Committed changes for {img_path} with {face_count} faces")
+        
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Error processing {img_path}: {str(e)}")
+        logging.error(traceback.format_exc())
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            connection_pool.putconn(conn)
+        
+    return face_count, face_ids
+
+
+def process_images_from_dir(source_dir="events", max_workers=10):
+    """
+    Process all images in a directory using multi-threading
+    
+    Args:
+        source_dir: Directory containing images to process
+        max_workers: Maximum number of concurrent threads
+        
+    Returns:
+        int: Total number of face embeddings inserted
+    """
+    # Initialize database structure
+    try:
+        init_database()
+    except Exception as e:
+        logging.error(f"Failed to initialize database: {str(e)}")
+        return 0
+
+    # Find all image files
+    image_files = []
+    for dirpath, dirnames, filenames in os.walk(source_dir):
+        for filename in filenames:
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                image_files.append(os.path.join(dirpath, filename))
+    
+    total_files = len(image_files)
+    logging.info(f"Found {total_files} image files to process in {source_dir}")
+    
+    if total_files == 0:
+        logging.warning(f"No image files found in {source_dir}")
+        return 0
+    
+    # Adjust max_workers to be conservative
+    max_workers = min(max_workers, 5)  # Limit to 5 workers maximum to avoid overloading
+    max_batch_size = 3  # Limit batch size to prevent memory issues
+    
+    # Process files using multi-threading with limited concurrency
+    total_faces = 0
+    next_idx = 0
+    
+    with tqdm(total=total_files, desc="Processing images") as pbar:
+        # Process files in small batches to control resource usage
+        for i in range(0, total_files, max_batch_size):
+            batch = image_files[i:i+max_batch_size]
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as executor:
+                # Start the processing tasks
+                future_to_file = {
+                    executor.submit(process_image, img_path, next_idx + idx): img_path 
+                    for idx, img_path in enumerate(batch)
+                }
+                
+                # Process results as they complete
+                for future in concurrent.futures.as_completed(future_to_file):
+                    img_path = future_to_file[future]
+                    try:
+                        face_count, face_ids = future.result()
+                        total_faces += face_count
+                        if face_ids:
+                            next_idx = max(next_idx, max(face_ids) + 1)
+                    except Exception as exc:
+                        logging.error(f'{img_path} generated an exception: {exc}')
+                        logging.error(traceback.format_exc())
+                    finally:
+                        pbar.update(1)
+            
+            # Force garbage collection between batches
+            gc.collect()
+    
+    logging.info(f"Total of {total_faces} face embeddings inserted into the database")
+
+    # Create index after all processing is complete
+    conn = None
+    cursor = None
+    try:
+        conn = connection_pool.getconn()
+        cursor = conn.cursor()
+        
+        tic = time.time()
+        logging.info("Creating HNSW index on embeddings...")
+        cursor.execute(
+            "CREATE INDEX ON identities USING hnsw (embedding vector_l2_ops);"
+        )
+        conn.commit()
+        toc = time.time()
+        logging.info(f"Index created in {round(toc-tic, 2)} seconds")
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Error creating index: {str(e)}")
+        logging.error(traceback.format_exc())
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            connection_pool.putconn(conn)
+    
+    return total_faces
+
+
+def process_images_sequentially(source_dir="events"):
+    """
+    Process all images sequentially - no multithreading
+    This is a safer alternative when multithreading causes segmentation faults
+    """
+    # Initialize database
+    try:
+        init_database()
+    except Exception as e:
+        logging.error(f"Failed to initialize database: {str(e)}")
+        return 0
+        
+    # Find all image files
+    image_files = []
+    for dirpath, dirnames, filenames in os.walk(source_dir):
+        for filename in filenames:
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                image_files.append(os.path.join(dirpath, filename))
+    
+    total_files = len(image_files)
+    logging.info(f"Found {total_files} image files to process in {source_dir}")
+    
+    if total_files == 0:
+        logging.warning(f"No image files found in {source_dir}")
+        return 0
+    
+    # Process files sequentially
+    total_faces = 0
+    next_idx = 0
+    
+    for img_path in tqdm(image_files, desc="Processing images"):
+        face_count, face_ids = process_image(img_path, next_idx)
+        total_faces += face_count
+        if face_ids:
+            next_idx = max(next_idx, max(face_ids) + 1)
+        # Force garbage collection after each image
+        gc.collect()
+    
+    logging.info(f"Total of {total_faces} face embeddings inserted into the database")
+    
+    # Create index after all processing is complete
+    conn = None
+    cursor = None
+    try:
+        conn = connection_pool.getconn()
+        cursor = conn.cursor()
+        
+        tic = time.time()
+        logging.info("Creating HNSW index on embeddings...")
+        cursor.execute(
+            "CREATE INDEX ON identities USING hnsw (embedding vector_l2_ops);"
+        )
+        conn.commit()
+        toc = time.time()
+        logging.info(f"Index created in {round(toc-tic, 2)} seconds")
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Error creating index: {str(e)}")
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            connection_pool.putconn(conn)
+    
+    return total_faces
+
+
+def show_target_image(target_path):
+    """Display the target image"""
+    logging.info(f"Loading target image: {target_path}")
+    target_img = cv2.imread(target_path)
+
+    if target_img is None:
+        logging.error(f"Failed to load image: {target_path}")
         return
-        
-    print(f"Found {len(results)} faces in query image")
+
+    plt.imshow(target_img[:, :, ::-1])
+    plt.show()
+
+
+def search_target_image(target_path, show_plots=False):
+    """
+    Search for matches to the target image in the database
     
-    # Create an index on the embedding column if it doesn't exist
+    Args:
+        target_path: Path to the target image
+        show_plots: Whether to display plots of matches (default: False)
+        
+    Returns:
+        dict: JSON-compatible dictionary with search results
+    """
+    logging.info(f"Searching for matches to target image: {target_path}")
+    
+    conn = None
+    cursor = None
+    result_dict = {
+        "target_image": target_path,
+        "matches": [],
+        "status": "error",
+        "message": ""
+    }
+    
     try:
-        with engine.connect() as conn:
-            # Check if index exists
-            exists = conn.execute(sqlalchemy.text(
-                "SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
-                "WHERE c.relname = 'face_embeddings_embedding_idx'"
-            )).scalar()
-            
-            if not exists:
-                print("Creating vector index for faster similarity search...")
-                conn.execute(sqlalchemy.text(
-                    "CREATE INDEX face_embeddings_embedding_idx ON face_embeddings USING ivfflat "
-                    "(embedding vector_l2_ops) WITH (lists = 100)"
-                ))
-                conn.commit()
-                print("Vector index created successfully")
-    except Exception as e:
-        print(f"Warning: Could not create index: {str(e)}")
-    
-    # Find matches for each face
-    for i, result in enumerate(results):
-        query_embedding = np.array(result['embedding'])
-        print(f"\nSearching for matches for face {i+1}/{len(results)}...")
-        
-        # Measure vector similarity search time
-        start_time = time.time()
-        
-        # Get matches with distance information
-        matches_query = session.query(
-            FaceEmbedding.id, 
-            FaceEmbedding.image_path,
-            FaceEmbedding.embedding.l2_distance(query_embedding).label('distance')
-        ).order_by('distance').limit(20)
-        
-        matches = matches_query.all()
-        
-        end_time = time.time()
-        elapsed_ms = (end_time - start_time) * 1000
-        print(f"  Vector similarity search took {elapsed_ms:.2f} ms")
-        
-        # Correct similarity calculation for Facenet512
-        # Typical L2 distances: 0-20 for Facenet512, with smaller being better
-        high_quality_matches = []
-        
-        for match in matches:
-            # Convert distance to similarity score (0-100%)
-            # For ArcFace, use a different similarity calculation
-            # ArcFace typically has a smaller distance range (0-1.2 typically)
-            if model_name == 'ArcFace':
-                similarity = max(0, 100 * (1 - (match.distance / 1.2)))
-            else:
-                # For Facenet512 and others, use existing calculation
-                similarity = max(0, 100 * (1 - (match.distance / 20.0)))
-            
-            if similarity >= min_similarity:
-                match.similarity = similarity
-                high_quality_matches.append(match)
-        
-        if high_quality_matches:
-            print(f"Matches with ≥{min_similarity}% similarity for face {i+1}:")
-            for j, match in enumerate(high_quality_matches):
-                print(f"  Match {j+1}: ID {match.id} - {match.image_path}")
-                print(f"     Similarity: {match.similarity:.2f}% (distance: {match.distance:.4f})")
-        else:
-            print(f"No matches found with ≥{min_similarity}% similarity for face {i+1}")
-            if matches:
-                best_match = matches[0]
-                best_similarity = max(0, 100 * (1 - (best_match.distance / 20.0)))
-                print("  Best available match (below similarity threshold):")
-                print(f"     ID {best_match.id} - {best_match.image_path}")
-                print(f"     Similarity: {best_similarity:.2f}% (distance: {best_match.distance:.4f})")
-                print(f"     Required: {min_similarity}% similarity, missing: {min_similarity-best_similarity:.2f}%")
+        # Get the embedding of the target image
+        with deepface_semaphore:
+            objs = DeepFace.represent(
+                img_path=target_path,
+                model_name="Facenet",
+                enforce_detection=False
+            )
 
-def main():
-    parser = argparse.ArgumentParser(description='Face Embedding Management')
-    parser.add_argument('--save', help='Path to image for saving embedding')
-    parser.add_argument('--find', help='Path to image for finding similar face')
-    parser.add_argument('--model', default='Facenet512',  # Changed default to Facenet512
-                       choices=['VGG-Face', 'Facenet', 'Facenet512', 'OpenFace', 
-                                'DeepFace', 'DeepID', 'ArcFace', 'Dlib', 'SFace'],
-                       help='Face recognition model to use')
-    parser.add_argument('--threshold', type=float, default=0.6, 
-                        help='Base similarity threshold (0-1)')
-    parser.add_argument('--similarity', type=float, default=80.0,
-                        help='Minimum similarity percentage (0-100) for matches')
-    parser.add_argument('--detector', default='mtcnn',
-                        choices=['retinaface', 'opencv', 'mtcnn', 'ssd', 'dlib'],
-                        help='Face detection backend')
-    parser.add_argument('--show-all', action='store_true',
-                        help='Show all matches regardless of similarity score')
-    args = parser.parse_args()
+        if not objs:
+            msg = f"No faces detected in target image: {target_path}"
+            logging.error(msg)
+            result_dict["message"] = msg
+            return result_dict
 
-    if args.save:
-        save_face_embedding(args.save, detector_backend=args.detector, model_name=args.model)
-    elif args.find:
-        min_similarity = 0.0 if args.show_all else args.similarity
-        find_similar_face(
-            args.find, 
-            threshold=args.threshold,
-            detector_backend=args.detector,
-            min_similarity=min_similarity,
-            model_name=args.model
+        # Get the embedding of the target image
+        target_embedding = objs[0]["embedding"]
+
+        # Get a connection from the pool
+        conn = connection_pool.getconn()
+        cursor = conn.cursor()
+        
+        # Search for the target image in the database
+        cursor.execute(
+            f"""
+            SELECT * 
+            FROM (
+                SELECT i.id, i.img_name, i.embedding <-> '{str(target_embedding)}' AS distance
+                FROM identities i
+            ) a
+            WHERE distance < 10
+            ORDER BY distance ASC
+            LIMIT 10
+            """
         )
-    else:
-        parser.print_help()
+
+        # Get the results
+        results = cursor.fetchall()
+
+        if not results:
+            msg = "No matches found in the database"
+            logging.info(msg)
+            result_dict["status"] = "success"
+            result_dict["message"] = msg
+            return result_dict
+
+        # Process the results
+        logging.info(f"Found {len(results)} matches:")
+        for i, result in enumerate(results):
+            id, img_path, distance = result
+            match_info = {
+                "id": id,
+                "image_path": img_path,
+                "distance": float(distance)
+            }
+            result_dict["matches"].append(match_info)
+            logging.info(f"Match #{i+1}: ID={id}, Image={img_path}, Distance={distance}")
+            
+            # Optionally display the matched images
+            if show_plots:
+                match_img = cv2.imread(img_path)
+                if match_img is not None:
+                    plt.figure(figsize=(10, 5))
+                    plt.subplot(1, 2, 1)
+                    plt.title("Target Image")
+                    plt.imshow(cv2.imread(target_path)[:, :, ::-1])
+                    plt.subplot(1, 2, 2)
+                    plt.title(f"Match #{i+1} (Distance: {distance:.4f})")
+                    plt.imshow(match_img[:, :, ::-1])
+                    plt.show()
+        
+        result_dict["status"] = "success"
+        result_dict["message"] = f"Found {len(results)} matches"
+            
+    except Exception as e:
+        error_msg = f"Error searching for target image: {str(e)}"
+        logging.error(error_msg)
+        logging.error(traceback.format_exc())
+        result_dict["message"] = error_msg
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            connection_pool.putconn(conn)
+    
+    return result_dict
+
+
+def cleanup_connections():
+    """Close all connections in the pool"""
+    if 'connection_pool' in globals():
+        connection_pool.closeall()
+        logging.info("All database connections closed")
+
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(description="DeepFace with PGVector for face recognition and search")
+    
+    parser.add_argument("--save", action="store_true", 
+                        help="Process images and save embeddings to database")
+    
+    parser.add_argument("--source", type=str, default="events", 
+                        help="Source directory containing images to process (default: events)")
+    
+    parser.add_argument("--target", type=str, 
+                        help="Target image to search for or display")
+    
+    parser.add_argument("--search", action="store_true", 
+                        help="Search for the target image in the database")
+                        
+    parser.add_argument("--show", action="store_true",
+                        help="Show plots when searching (default: False, returns JSON)")
+
+    parser.add_argument("--threads", type=int, default=3,
+                        help="Number of concurrent threads for processing (default: 3)")
+                        
+    parser.add_argument("--sequential", action="store_true",
+                        help="Process images sequentially (no multithreading)")
+    
+    return parser.parse_args()
+
 
 if __name__ == "__main__":
-    main()
-
+    args = parse_arguments()
+    
+    try:
+        # Process images and save to database
+        if args.save:
+            logging.info(f"Processing images from source directory: {args.source}")
+            
+            if args.sequential:
+                logging.info("Using sequential processing (no multithreading)")
+                process_images_sequentially(source_dir=args.source)
+            else:
+                logging.info(f"Using multithreaded processing with {args.threads} threads")
+                process_images_from_dir(source_dir=args.source, max_workers=args.threads)
+        
+        # Handle target image operations
+        if args.target:
+            if os.path.exists(args.target):
+                if args.search:
+                    # Search for matches to target image
+                    results = search_target_image(args.target, show_plots=args.show)
+                    
+                    # If not showing plots, print the JSON results
+                    if not args.show:
+                        print(json.dumps(results, indent=2))
+                else:
+                    # Just display the target image
+                    show_target_image(args.target)
+            else:
+                logging.error(f"Target image not found: {args.target}")
+                
+        # If no arguments provided, show usage
+        if not (args.save or args.target):
+            logging.info("No actions specified. Use --save to process images or --target to specify a target image.")
+            logging.info("Run with --help for more information.")
+            
+    except KeyboardInterrupt:
+        logging.info("Process interrupted by user")
+    except Exception as e:
+        logging.error(f"Unexpected error: {str(e)}")
+        logging.error(traceback.format_exc())
+    finally:
+        # Make sure to clean up connections when done
+        cleanup_connections()
