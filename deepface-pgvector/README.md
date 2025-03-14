@@ -1,60 +1,90 @@
-# Deepface
+# 😎 Face Finder 🔍🤳
 
-The best detector backend and model for face lookup in DeepFace depend on your specific requirements, such as speed, accuracy, and computational resources. Below is a summary of the top options:
+This is a cool computer program that can find faces in pictures and remember them! It's like teaching your computer to recognize your friends. ✨🧠💻
 
-### **Detector Backends**
+## 🌟 What This Program Can Do 🌟
 
-1. **RetinaFace**:
-   - High accuracy and efficiency.
-   - Performs both face detection and landmark detection simultaneously.
-   - Recommended for applications requiring robust detection[1][7][9].
+- 👁️ Look at lots of pictures and find all the faces
+- 🧠 Remember what each face looks like
+- 🔄 Find pictures of the same person even if they look different (like smiling 😃 or frowning 😠)
+- 🔎 Let you search for someone's face to see if they're in other pictures
 
-2. **MTCNN (Multi-task Cascaded Convolutional Networks)**:
-   - Reliable for face detection and alignment.
-   - Often used for its balance of speed and accuracy[1][7].
+## 🎮 How To Use It 🎮
 
-3. **Dlib**:
-   - Lightweight and relatively fast.
-   - Good for simpler applications but slightly less accurate than RetinaFace or MTCNN[7][9].
+You can talk to the program by typing special commands:
 
-4. **OpenCV**:
-   - Fastest option but less accurate since it uses traditional methods (e.g., Haar cascades).
-   - Suitable for resource-constrained environments[4][7].
+```
+python main.py [options]
+```
 
-### **Face Recognition Models**
+Here are the cool things you can tell it to do:
 
-1. **FaceNet**:
-   - Achieves state-of-the-art accuracy (99.63% on LFW dataset).
-   - Efficient with compact embeddings (128 bytes per face).
-   - Ideal for high-accuracy applications[4][9].
+- `--save` 💾 : Tell the program to look at your pictures and remember the faces
+- `--source FOLDER` 📁 : Tell it which folder has your pictures (if you don't say, it looks in a folder called "events")
+- `--target PICTURE` 🎯 : Show it a picture of someone to find
+- `--search` 🔍 : Ask it to look for the person in your picture
+- `--show` 📺 : Ask it to show you the matches with pictures
+- `--threads NUMBER` ⚡ : Make it work faster by using more brain power
+- `--sequential` 🐢 : Make it work more carefully one picture at a time
 
-2. **ArcFace**:
-   - Excellent performance and widely regarded as one of the best models.
-   - High accuracy on benchmarks like LFW [99.5%][6](9).
+### ✨ Examples ✨
 
-3. **VGG-Face**:
-   - Default model in DeepFace.
-   - Reliable but slightly less accurate compared to FaceNet and ArcFace[4][9].
+1. To scan all your pictures and remember the faces:
+   ```
+   python main.py --save
+   ```
+   📸 → 💾
 
-4. **Facenet512**:
-   - Enhanced version of FaceNet with higher accuracy [98.4% measured score in DeepFace benchmarks](9).
+2. To scan pictures in your vacation folder:
+   ```
+   python main.py --save --source my_summer_vacation
+   ```
+   🏖️ → 💾
 
-### **Recommendations**
+3. To find pictures of your friend from a photo:
+   ```
+   python main.py --target picture_of_my_friend.jpg --search
+   ```
+   👧 → 🔍
 
-- For **high accuracy**: Use RetinaFace as the detector backend with FaceNet or ArcFace as the recognition model.
-- For **speed and lightweight applications**: Use OpenCV as the backend with Dlib or VGG-Face as the model.
-- For a balance of speed and accuracy: Use MTCNN with ArcFace or Facenet512.
+4. To find your friend AND see the matching pictures:
+   ```
+   python main.py --target picture_of_my_friend.jpg --search --show
+   ```
+   👧 → 🔍 → 📺
 
-By combining RetinaFace with FaceNet or ArcFace, you can achieve optimal results for most face lookup tasks in DeepFace.
+## 🧙‍♂️ How It Works 🪄
 
-Sources
-[1] 8 Different Face Detectors in DeepFace - YouTube <https://www.youtube.com/watch?v=sztYky2_2MU>
-[2] How to use DeepFace.detectFace() to actually detect a several faces ... <https://stackoverflow.com/questions/69236652/how-to-use-deepface-detectface-to-actually-detect-a-several-faces-in-an-image>
-[3] Best Face Landmark Detection models : r/computervision - Reddit <https://www.reddit.com/r/computervision/comments/vvu653/best_face_landmark_detection_models/>
-[4] DeepFace: A Popular Open Source Facial Recognition Library - viso.ai <https://viso.ai/computer-vision/deepface/>
-[5] Face recognition and face matching with Python and DeepFace <https://www.youtube.com/watch?v=FavHtxgP4l4>
-[6] How to Use Deep Learning for Face Detection and Recognition ... <https://www.turing.com/kb/using-deep-learning-to-design-face-detection-and-recognition-systems>
-[7] serengil/deepface: A Lightweight Face Recognition and ... - GitHub <https://github.com/serengil/deepface>
-[8] Models for facial identification? : r/computervision - Reddit <https://www.reddit.com/r/computervision/comments/wvzdps/models_for_facial_identification/>
-[9] deepface - PyPI <https://pypi.org/project/deepface/>
-[10] tvgh/deepface-for-stable-diffusion - GitHub <https://github.com/tvgh/deepface-for-stable-diffusion>
+This program uses a special computer brain called "FaceNet" 🧠 that can look at a face and turn it into 128 numbers. These numbers describe the face - like how far apart the eyes are 👀 or how big the nose is 👃.
+
+When the program remembers a face, it stores these numbers in a special box called a "database" 📦. Later, when you want to find someone, it compares their face numbers to all the saved face numbers and finds the closest matches! ✅
+
+## 👁️ Face Detection Tools 🔍
+
+The program can use different tools to find faces in pictures:
+
+1. **RetinaFace** 🦅: This is super accurate but needs a powerful computer. 💪💻
+2. **MTCNN** 🏆: This is pretty good and works well on most computers. 👍
+3. **Dlib** 🚀: This is faster but might miss some faces. 💨
+4. **OpenCV** ⚡: This is the fastest but not as good at finding all faces. 🏎️
+
+## 🧠 Face Recognition Tools 🤔
+
+After finding a face, the program uses these tools to remember it:
+
+1. **FaceNet** 🌟: This is really good at remembering faces accurately. 💯
+2. **ArcFace** 🏹: This is also very accurate. 🎯
+3. **VGG-Face** 👤: This is not as good but works OK. 👌
+4. **Facenet512** ⭐: This is a better version of FaceNet. 📈
+
+## 🛠️ What You Need To Run This Program 🛠️
+
+- A computer program called PostgreSQL 🐘 with something special added to it called pgvector 📊
+- Some Python helper programs: 
+  - 🐍 deepface
+  - 🔌 psycopg2
+  - 👁️ opencv-python
+  - 📊 matplotlib
+  - ⏱️ tqdm
+
+Don't worry about all these fancy names - a grown-up can help you install them if you want to try the program! 👨‍👩‍👧‍👦 👩‍💻

@@ -1,20 +1,18 @@
 import os
 from deepface import DeepFace
 import psycopg2
-from psycopg2 import pool
 import cv2
 import matplotlib.pyplot as plt
 from tqdm import tqdm 
 import time
 import logging
 import argparse
-import concurrent.futures
-from threading import Lock, Semaphore
 import gc
 import traceback
 import json
+import hashlib
+import uuid
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -24,44 +22,44 @@ logging.basicConfig(
     ]
 )
 
-# Create a connection pool instead of a single connection
-try:
-    connection_pool = pool.ThreadedConnectionPool(
-        minconn=5,
-        maxconn=20,
-        host="localhost",
-        port="5432",
-        database="postgres",
-        user="yilmaz"
-    )
-    logging.info("Connection pool created successfully")
-except Exception as e:
-    logging.error(f"Error creating connection pool: {str(e)}")
-    raise
+base_dir = os.getcwd()
+events_dir = os.path.join(base_dir, "events")
 
-# Create a semaphore to limit concurrent DeepFace operations
-# This helps prevent segmentation faults by limiting concurrent access to computational resources
-deepface_semaphore = Semaphore(2)  # Limit to 2 concurrent DeepFace operations
+# Database connection parameters
+db_params = {
+    "host": "localhost",
+    "port": "5432",
+    "database": "postgres",
+    "user": "yilmaz"
+}
 
-# Initialize database tables
+def get_connection():
+    """Get a database connection"""
+    try:
+        conn = psycopg2.connect(**db_params)
+        return conn
+    except Exception as e:
+        logging.error(f"Error creating database connection: {str(e)}")
+        raise
+
 def init_database():
     """Initialize the database with required tables and extensions"""
     conn = None
     cursor = None
     try:
-        conn = connection_pool.getconn()
+        conn = get_connection()
         cursor = conn.cursor()
         
-        # Create vector extension
         cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        
-        # Drop and recreate identities table
         cursor.execute("DROP TABLE IF EXISTS identities;")
         cursor.execute("""
             CREATE TABLE identities (
-            ID INT PRIMARY KEY,
-            IMG_NAME VARCHAR(100),
-            embedding vector(128));
+                ID UUID PRIMARY KEY,
+                EVENT_CODE VARCHAR(100),
+                IMG_NAME VARCHAR(100),
+                embedding vector(128),
+                CHECKSUM_SHA256 VARCHAR(64)
+            );
         """)
         
         conn.commit()
@@ -75,88 +73,68 @@ def init_database():
         if cursor:
             cursor.close()
         if conn:
-            connection_pool.putconn(conn)
+            conn.close()
 
 
 def extract_face_embeddings(img_path):
-    """
-    Extract face embeddings from an image using DeepFace
-    
-    This function is separated to use a semaphore for limiting concurrent DeepFace operations
-    """
     try:
-        # Use a semaphore to limit concurrent DeepFace operations
-        with deepface_semaphore:
-            objs = DeepFace.represent(
-                img_path=img_path,
-                model_name="Facenet",
-                enforce_detection=False
-            )
-            
-            # Create a copy of the results to avoid memory issues
-            result = []
-            for obj in objs:
-                result.append(obj.copy())
-            
-            # Force garbage collection to free memory
-            gc.collect()
-            
-            return result
+        objs = DeepFace.represent(
+            img_path=img_path,
+            model_name="Facenet",
+            enforce_detection=False
+        )
+        
+        result = []
+        for obj in objs:
+            result.append(obj.copy())
+        
+        gc.collect()
+        
+        return result
     except Exception as e:
         logging.error(f"Error extracting face embeddings from {img_path}: {str(e)}")
         logging.error(traceback.format_exc())
         return []
 
 
-def process_image(img_path, start_idx):
-    """
-    Process a single image file, extract face embeddings and save to database
-    
-    Args:
-        img_path: Path to the image file
-        start_idx: Starting index for face IDs from this image
-        
-    Returns:
-        tuple: (number of faces processed, list of face IDs)
-    """
+def process_image(img_path, event_code):
     conn = None
     cursor = None
+    
+    img_has_face = has_face(img_path)
+    if not img_has_face:
+        logging.info(f"No faces found in {img_path}")
+        return -1, []
+    
     logging.info(f"Processing image: {img_path}")
     face_count = 0
-    face_ids = []
     
     try:
-        # Extract face embeddings with limited concurrency
         objs = extract_face_embeddings(img_path)
-        
         if not objs:
             logging.info(f"No faces found in {img_path}")
-            return face_count, face_ids
+            return face_count
             
         logging.info(f"Found {len(objs)} faces in {img_path}")
         
-        # Get a connection from the pool
-        conn = connection_pool.getconn()
+        conn = get_connection()
         cursor = conn.cursor()
         
-        # Process each face in the image
         for i, obj in enumerate(objs):
             embedding = obj["embedding"]
-            face_id = start_idx + i
-            face_ids.append(face_id)
-            
+            face_id = uuid.uuid4()
+            checksum = hashlib.sha256(img_path.encode()).hexdigest()
             statement = f"""
                 INSERT INTO identities
-                    (id, img_name, embedding)
+                    (id, event_code, img_name, embedding, checksum_sha256)
                     VALUES
-                    ({face_id}, '{img_path}', '{str(embedding)}')
+                    ('{face_id}', '{event_code}', '{os.path.basename(img_path)}', '{str(embedding)}', '{checksum}')
             """
             
             cursor.execute(statement)
             logging.info(f"Inserting face #{face_id} from {img_path} into identities table")
             face_count += 1
             
-        # Commit after all faces from this image are processed
         conn.commit()
         logging.info(f"Committed changes for {img_path} with {face_count} faces")
         
@@ -169,115 +147,14 @@ def process_image(img_path, start_idx):
         if cursor:
             cursor.close()
         if conn:
-            connection_pool.putconn(conn)
+            conn.close()
         
-    return face_count, face_ids
+    return face_count
 
 
-def process_images_from_dir(source_dir="events", max_workers=10):
+def process_images_from_dir(source_dir="events"):
     """
-    Process all images in a directory using multi-threading
-    
-    Args:
-        source_dir: Directory containing images to process
-        max_workers: Maximum number of concurrent threads
-        
-    Returns:
-        int: Total number of face embeddings inserted
-    """
-    # Initialize database structure
-    try:
-        init_database()
-    except Exception as e:
-        logging.error(f"Failed to initialize database: {str(e)}")
-        return 0
-
-    # Find all image files
-    image_files = []
-    for dirpath, dirnames, filenames in os.walk(source_dir):
-        for filename in filenames:
-            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
-                image_files.append(os.path.join(dirpath, filename))
-    
-    total_files = len(image_files)
-    logging.info(f"Found {total_files} image files to process in {source_dir}")
-    
-    if total_files == 0:
-        logging.warning(f"No image files found in {source_dir}")
-        return 0
-    
-    # Adjust max_workers to be conservative
-    max_workers = min(max_workers, 5)  # Limit to 5 workers maximum to avoid overloading
-    max_batch_size = 3  # Limit batch size to prevent memory issues
-    
-    # Process files using multi-threading with limited concurrency
-    total_faces = 0
-    next_idx = 0
-    
-    with tqdm(total=total_files, desc="Processing images") as pbar:
-        # Process files in small batches to control resource usage
-        for i in range(0, total_files, max_batch_size):
-            batch = image_files[i:i+max_batch_size]
-            
-            with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as executor:
-                # Start the processing tasks
-                future_to_file = {
-                    executor.submit(process_image, img_path, next_idx + idx): img_path 
-                    for idx, img_path in enumerate(batch)
-                }
-                
-                # Process results as they complete
-                for future in concurrent.futures.as_completed(future_to_file):
-                    img_path = future_to_file[future]
-                    try:
-                        face_count, face_ids = future.result()
-                        total_faces += face_count
-                        if face_ids:
-                            next_idx = max(next_idx, max(face_ids) + 1)
-                    except Exception as exc:
-                        logging.error(f'{img_path} generated an exception: {exc}')
-                        logging.error(traceback.format_exc())
-                    finally:
-                        pbar.update(1)
-            
-            # Force garbage collection between batches
-            gc.collect()
-    
-    logging.info(f"Total of {total_faces} face embeddings inserted into the database")
-
-    # Create index after all processing is complete
-    conn = None
-    cursor = None
-    try:
-        conn = connection_pool.getconn()
-        cursor = conn.cursor()
-        
-        tic = time.time()
-        logging.info("Creating HNSW index on embeddings...")
-        cursor.execute(
-            "CREATE INDEX ON identities USING hnsw (embedding vector_l2_ops);"
-        )
-        conn.commit()
-        toc = time.time()
-        logging.info(f"Index created in {round(toc-tic, 2)} seconds")
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        logging.error(f"Error creating index: {str(e)}")
-        logging.error(traceback.format_exc())
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            connection_pool.putconn(conn)
-    
-    return total_faces
-
-
-def process_images_sequentially(source_dir="events"):
-    """
-    Process all images sequentially - no multithreading
-    This is a safer alternative when multithreading causes segmentation faults
+    Process all images from a directory and save the embeddings to the database
     """
     # Initialize database
     try:
@@ -285,10 +162,10 @@ def process_images_sequentially(source_dir="events"):
     except Exception as e:
         logging.error(f"Failed to initialize database: {str(e)}")
         return 0
-        
+    
     # Find all image files
     image_files = []
-    for dirpath, dirnames, filenames in os.walk(source_dir):
+    for dirpath, _, filenames in os.walk(source_dir):
         for filename in filenames:
             if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
                 image_files.append(os.path.join(dirpath, filename))
@@ -303,12 +180,14 @@ def process_images_sequentially(source_dir="events"):
     # Process files sequentially
     total_faces = 0
     next_idx = 0
+    event_code = source_dir.split("/")[-1]
     
     for img_path in tqdm(image_files, desc="Processing images"):
-        face_count, face_ids = process_image(img_path, next_idx)
+        face_count = process_image(img_path, event_code)
+        if face_count == -1: # No faces found in image, skip it
+            continue
+
         total_faces += face_count
-        if face_ids:
-            next_idx = max(next_idx, max(face_ids) + 1)
         # Force garbage collection after each image
         gc.collect()
     
@@ -318,7 +197,7 @@ def process_images_sequentially(source_dir="events"):
     conn = None
     cursor = None
     try:
-        conn = connection_pool.getconn()
+        conn = get_connection()
         cursor = conn.cursor()
         
         tic = time.time()
@@ -333,11 +212,12 @@ def process_images_sequentially(source_dir="events"):
         if conn:
             conn.rollback()
         logging.error(f"Error creating index: {str(e)}")
+        logging.error(traceback.format_exc())
     finally:
         if cursor:
             cursor.close()
         if conn:
-            connection_pool.putconn(conn)
+            conn.close()
     
     return total_faces
 
@@ -354,6 +234,38 @@ def show_target_image(target_path):
     plt.imshow(target_img[:, :, ::-1])
     plt.show()
 
+
+
+def has_face(img_path):
+    print(f"Processing image: {img_path}")
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    
+    try:
+        image = cv2.imread(img_path)
+        if image is None:
+            print(f"Failed to load image: {img_path}")
+            return False
+            
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        # Use more conservative parameters for better accuracy
+        faces = face_cascade.detectMultiScale(
+            gray,
+            scaleFactor=1.05,  # Smaller scale factor for more thorough scanning
+            minNeighbors=6,    # More neighbors required for higher confidence
+            minSize=(40, 40),  # Larger minimum face size to reduce false positives
+            flags=cv2.CASCADE_SCALE_IMAGE
+        )
+        
+        if len(faces) > 0:
+            print(f"Found {len(faces)} faces in {img_path}")
+            return True
+        else:
+            print(f"No faces found in {img_path}")
+            return False
+            
+    except Exception as e:
+        print(f"Error processing {img_path}: {e}")
+        return False
 
 def search_target_image(target_path, show_plots=False):
     """
@@ -376,15 +288,21 @@ def search_target_image(target_path, show_plots=False):
         "status": "error",
         "message": ""
     }
+
+    target_has_face = has_face(target_path)
+    if not target_has_face:
+        msg = f"No faces detected in target image: {target_path}"
+        logging.error(msg)
+        result_dict["message"] = msg
+        return result_dict
     
     try:
         # Get the embedding of the target image
-        with deepface_semaphore:
-            objs = DeepFace.represent(
-                img_path=target_path,
-                model_name="Facenet",
-                enforce_detection=False
-            )
+        objs = DeepFace.represent(
+            img_path=target_path,
+            model_name="Facenet",
+            enforce_detection=False
+        )
 
         if not objs:
             msg = f"No faces detected in target image: {target_path}"
@@ -395,8 +313,8 @@ def search_target_image(target_path, show_plots=False):
         # Get the embedding of the target image
         target_embedding = objs[0]["embedding"]
 
-        # Get a connection from the pool
-        conn = connection_pool.getconn()
+        # Get a connection
+        conn = get_connection()
         cursor = conn.cursor()
         
         # Search for the target image in the database
@@ -460,16 +378,14 @@ def search_target_image(target_path, show_plots=False):
         if cursor:
             cursor.close()
         if conn:
-            connection_pool.putconn(conn)
+            conn.close()
     
     return result_dict
 
 
 def cleanup_connections():
-    """Close all connections in the pool"""
-    if 'connection_pool' in globals():
-        connection_pool.closeall()
-        logging.info("All database connections closed")
+    """No longer needed as we're not using a connection pool"""
+    logging.info("Cleanup not needed - using individual connections")
 
 
 def parse_arguments():
@@ -490,12 +406,9 @@ def parse_arguments():
                         
     parser.add_argument("--show", action="store_true",
                         help="Show plots when searching (default: False, returns JSON)")
-
-    parser.add_argument("--threads", type=int, default=3,
-                        help="Number of concurrent threads for processing (default: 3)")
-                        
-    parser.add_argument("--sequential", action="store_true",
-                        help="Process images sequentially (no multithreading)")
+    
+    parser.add_argument("--init", action="store_true",
+                        help="Initialize the database")
     
     return parser.parse_args()
 
@@ -507,13 +420,7 @@ if __name__ == "__main__":
         # Process images and save to database
         if args.save:
             logging.info(f"Processing images from source directory: {args.source}")
-            
-            if args.sequential:
-                logging.info("Using sequential processing (no multithreading)")
-                process_images_sequentially(source_dir=args.source)
-            else:
-                logging.info(f"Using multithreaded processing with {args.threads} threads")
-                process_images_from_dir(source_dir=args.source, max_workers=args.threads)
+            process_images_from_dir(source_dir=args.source)
         
         # Handle target image operations
         if args.target:
@@ -535,12 +442,12 @@ if __name__ == "__main__":
         if not (args.save or args.target):
             logging.info("No actions specified. Use --save to process images or --target to specify a target image.")
             logging.info("Run with --help for more information.")
+
+        if args.init:
+            init_database()
             
     except KeyboardInterrupt:
         logging.info("Process interrupted by user")
     except Exception as e:
         logging.error(f"Unexpected error: {str(e)}")
         logging.error(traceback.format_exc())
-    finally:
-        # Make sure to clean up connections when done
-        cleanup_connections()
