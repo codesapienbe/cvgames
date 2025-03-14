@@ -238,11 +238,13 @@ async def calculate_image_checksum(img_path):
     try:
         with open(img_path, 'rb') as f:
             file_content = f.read()
-            return hashlib.sha256(file_content).hexdigest()
+            checksum = hashlib.sha256(file_content).hexdigest()
+            logging.info(f"Generated content checksum for {os.path.basename(img_path)}: {checksum[:10]}...")
+            return checksum
     except Exception as e:
-        logging.error(f"Error calculating checksum for {img_path}: {str(e)}")
-        # Fallback to path-based checksum
-        return hashlib.sha256(img_path.encode()).hexdigest()
+        message = f"Error calculating content checksum for {img_path}: {str(e)}"
+        logging.error(message)
+        raise Exception(message)
 
 async def image_already_processed(img_path, event_code):
     """
@@ -259,16 +261,21 @@ async def image_already_processed(img_path, event_code):
     cursor = None
     
     try:
-        # Generate checksum for the image content
-        checksum = await calculate_image_checksum(img_path)
+        try:
+            checksum = await calculate_image_checksum(img_path)
+        except Exception as e:
+            logging.error(f"Could not calculate checksum for {img_path}, assuming not processed: {str(e)}")
+            return False
+            
         img_name = os.path.basename(img_path)
         
-        logging.info(f"Checking if image {img_name} with checksum {checksum} exists in database")
+        logging.info(f"Checking if image {img_name} with checksum {checksum[:10]}... exists in database")
         
         # Check database for this image
         conn = get_connection()
         cursor = conn.cursor()
         
+        # Start with an exact match on checksum and name
         cursor.execute(
             """
             SELECT COUNT(*) FROM identities 
@@ -278,14 +285,25 @@ async def image_already_processed(img_path, event_code):
         )
         
         count = cursor.fetchone()[0]
-        exists = count > 0
         
-        if exists:
-            logging.info(f"Found {count} existing records for image {img_name}")
-        else:
-            logging.info(f"No existing records found for image {img_name}")
+        if count > 0:
+            logging.info(f"MATCH FOUND: {count} records for {img_name} with exact checksum match")
+            return True
             
-        return exists
+        # If that didn't match, try just by checksum as a fallback
+        # This catches the same image with different names
+        cursor.execute(
+            "SELECT COUNT(*) FROM identities WHERE checksum_sha256 = %s",
+            (checksum,)
+        )
+        
+        count_by_checksum = cursor.fetchone()[0]
+        if count_by_checksum > 0:
+            logging.info(f"MATCH FOUND: {count_by_checksum} records with matching checksum {checksum[:10]}... (different names)")
+            return True
+            
+        logging.info(f"No matching records found for image {img_name} with checksum {checksum[:10]}...")
+        return False
         
     except Exception as e:
         logging.error(f"Error checking if image {img_path} is already processed: {str(e)}")
@@ -308,7 +326,7 @@ async def process_image(img_path, event_code):
         logging.error(f"Image not found: {img_path}")
         return -1
     
-    # Check if image is already processed
+    # Check if image is already processed - using same checksum method
     if await image_already_processed(img_path, event_code):
         logging.info(f"Image {img_path} already processed, skipping")
         return 0
@@ -330,8 +348,17 @@ async def process_image(img_path, event_code):
         cursor = conn.cursor()
 
         # Generate checksum once for this image based on content
-        checksum = await calculate_image_checksum(img_path)
+        # Using same method as in image_already_processed
+        try:
+            checksum = await calculate_image_checksum(img_path)
+        except Exception as e:
+            logging.error(f"Error calculating checksum for {img_path}, cannot proceed: {str(e)}")
+            return -1
+            
         img_name = os.path.basename(img_path)
+        
+        # Log the checksum details for easier debugging
+        logging.info(f"Storing image {img_name} with checksum {checksum[:10]}...")
 
         for i, obj in enumerate(objs):
             # Get specific embedding for this face
@@ -365,21 +392,33 @@ async def process_image(img_path, event_code):
             face_id = uuid.uuid4()
             
             # Use parameterized query instead of string formatting for consistency
-            cursor.execute(
-                """
-                INSERT INTO identities
-                    (id, event_code, img_name, embedding, faces_base64, checksum_sha256)
-                    VALUES
-                    (%s, %s, %s, %s, %s, %s)
-                """,
-                (str(face_id), event_code, img_name, str(embedding), face_base64, checksum)
-            )
-            
-            logging.info(f"Inserting face #{i+1} (ID: {face_id}) from {img_path} into identities table")
-            face_count += 1
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO identities
+                        (id, event_code, img_name, embedding, faces_base64, checksum_sha256)
+                        VALUES
+                        (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (str(face_id), event_code, img_name, str(embedding), face_base64, checksum)
+                )
+                
+                logging.info(f"Inserting face #{i+1} (ID: {face_id}) from {img_path} with checksum {checksum[:10]}...")
+                face_count += 1
+            except Exception as e:
+                logging.error(f"Error inserting face #{i+1} from {img_path}: {str(e)}")
+                continue
             
         conn.commit()
         logging.info(f"Committed changes for {img_path} with {face_count} faces")
+        
+        # Verify records were saved (using the same checksum method as validation)
+        cursor.execute(
+            "SELECT COUNT(*) FROM identities WHERE img_name = %s AND checksum_sha256 = %s",
+            (img_name, checksum)
+        )
+        count = cursor.fetchone()[0]
+        logging.info(f"Verification: Found {count} records for {img_name} with matching checksum after insertion")
         
     except Exception as e:
         if conn:
