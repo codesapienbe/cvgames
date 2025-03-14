@@ -1,3 +1,4 @@
+import base64
 import os
 from deepface import DeepFace
 import psycopg2
@@ -26,6 +27,9 @@ logging.basicConfig(
 
 base_dir = os.getcwd()
 events_dir = os.path.join(base_dir, "events")
+
+base_model = "Facenet512"
+base_detector = "retinaface"
 
 # Database connection parameters
 db_params = {
@@ -72,7 +76,8 @@ def init_database():
                 ID UUID PRIMARY KEY,
                 EVENT_CODE VARCHAR(100),
                 IMG_NAME VARCHAR(100),
-                embedding vector(128),
+                EMBEDDING vector(512),
+                FACES_BASE64 TEXT,
                 CHECKSUM_SHA256 VARCHAR(64)
             );
         """)
@@ -95,9 +100,9 @@ def extract_face_embeddings(img_path):
     try:
         objs = DeepFace.represent(
             img_path=img_path,
-            model_name="Facenet",
-            detector_backend="retinaface",
-            enforce_detection=True
+            model_name=base_model,
+            detector_backend=base_detector,
+            enforce_detection=False
         )
         
         result = []
@@ -105,7 +110,7 @@ def extract_face_embeddings(img_path):
             result.append(obj.copy())
         
         gc.collect()
-        
+        # returns [ {'embedding': [...], 'facial_area': {'x': 100, 'y': 100, 'w': 100, 'h': 100}, 'landmarks': {'left_eye': (100, 100), 'right_eye': (100, 100), 'nose': (100, 100), 'mouth_left': (100, 100), 'mouth_right': (100, 100)}, 'region': {'x': 100, 'y': 100, 'w': 100, 'h': 100}, 'age': 20, 'gender': 'male', 'race': 'asian', 'emotion': 'happy', 'dominant_emotion': 'happy', 'dominant_race': 'asian', 'dominant_age': 20} ]
         return result
     except Exception as e:
         logging.error(f"Error extracting face embeddings from {img_path}: {str(e)}")
@@ -113,15 +118,143 @@ def extract_face_embeddings(img_path):
         return []
 
 
+def capture_face_by_coordinates(img_path, coordinates):
+    """
+    Safely extract a face from an image using coordinates
+    
+    Args:
+        img_path: Path to the image
+        coordinates: Dictionary with x, y, w, h keys
+        
+    Returns:
+        Face image or None if extraction fails
+    """
+    try:
+        img = cv2.imread(img_path)
+        if img is None:
+            logging.error(f"Could not read image: {img_path}")
+            return None
+            
+        # Get coordinates ensuring they're within image boundaries
+        x = max(0, coordinates["x"])
+        y = max(0, coordinates["y"])
+        w = coordinates["w"]
+        h = coordinates["h"]
+        
+        # Make sure coordinates don't exceed image dimensions
+        height, width = img.shape[:2]
+        if x + w > width:
+            w = width - x
+        if y + h > height:
+            h = height - y
+            
+        if w <= 0 or h <= 0:
+            logging.warning(f"Invalid face coordinates in {img_path}: {coordinates}")
+            return None
+            
+        # Extract the face region
+        face_img = img[y:y+h, x:x+w]
+        if face_img.size == 0:
+            logging.warning(f"Extracted empty face from {img_path} with coordinates {coordinates}")
+            return None
+            
+        return face_img
+    except Exception as e:
+        logging.error(f"Error capturing face from {img_path}: {str(e)}")
+        return None
+
+def extract_faces_by_coordinates(img_path, faces):
+    # extract faces by face coordinates from img_path, using opencv
+    result = []
+    for face in faces:
+        captured_face = capture_face_by_coordinates(img_path, face["facial_area"])
+        result.append(captured_face)
+    return result
+
+
+def extract_faces_base64(img_path, objs):
+    """
+    Extract faces from image and convert to base64
+    
+    Args:
+        img_path: Path to the image
+        objs: List of objects with facial_area data from DeepFace.represent()
+        
+    Returns:
+        Comma-separated string of base64-encoded face images
+    """
+    if not objs:
+        logging.warning(f"No face objects provided for {img_path}")
+        return ""
+        
+    try:
+        # Debug log the objects structure
+        logging.info(f"Processing {len(objs)} face objects for {img_path}")
+        
+        result = []
+        for i, obj in enumerate(objs):
+            try:
+                if "facial_area" not in obj:
+                    logging.warning(f"Missing facial_area in object {i} for {img_path}")
+                    continue
+                    
+                facial_area = obj["facial_area"]
+                logging.info(f"Processing face {i} with area: {facial_area}")
+                
+                # Capture the face from the image
+                face_img = capture_face_by_coordinates(img_path, facial_area)
+                if face_img is None:
+                    logging.warning(f"Failed to capture face {i} from {img_path}")
+                    continue
+                
+                # Resize face to standard size
+                resized_face = cv2.resize(face_img, (100, 100))
+                
+                # Encode to JPEG format in memory
+                success, buffer = cv2.imencode('.jpg', resized_face)
+                if not success:
+                    logging.warning(f"Failed to encode face {i} from {img_path}")
+                    continue
+                    
+                # Convert to base64
+                face_base64 = base64.b64encode(buffer).decode("utf-8")
+                result.append(face_base64)
+                logging.info(f"Successfully encoded face {i} from {img_path}")
+                
+            except Exception as e:
+                logging.error(f"Error processing face {i} from {img_path}: {str(e)}")
+                continue
+        
+        # Join all encoded faces with commas
+        if result:
+            logging.info(f"Successfully encoded {len(result)} faces from {img_path}")
+            return ",".join(result)
+        else:
+            logging.warning(f"No faces could be encoded from {img_path}")
+            return ""
+            
+    except Exception as e:
+        logging.error(f"Error in extract_faces_base64 for {img_path}: {str(e)}")
+        logging.error(traceback.format_exc())
+        return ""
+
 def process_image(img_path, event_code):
     conn = None
     cursor = None
     
     logging.info(f"Processing image: {img_path}")
     face_count = 0
+
+    if not os.path.exists(img_path):
+        logging.error(f"Image not found: {img_path}")
+        return -1
     
+    if not has_face(img_path):
+        logging.info(f"No faces found in {img_path}")
+        return 0
+
     try:
-        # First check if image has faces using DeepFace instead of OpenCV
+        # Extract face embeddings
         objs = extract_face_embeddings(img_path)
         if not objs:
             logging.info(f"No faces found in {img_path} by DeepFace")
@@ -131,16 +264,45 @@ def process_image(img_path, event_code):
         
         conn = get_connection()
         cursor = conn.cursor()
-        
+
         for i, obj in enumerate(objs):
+            # Get specific embedding for this face
             embedding = obj["embedding"]
+            
+            # Get the facial area for this face
+            if "facial_area" not in obj:
+                logging.warning(f"Missing facial_area for face {i} in {img_path}, skipping")
+                continue
+                
+            # Extract the specific face as base64
+            face_img = capture_face_by_coordinates(img_path, obj["facial_area"])
+            if face_img is None:
+                logging.warning(f"Failed to capture face {i} from {img_path}, skipping")
+                continue
+                
+            # Resize and encode the face
+            try:
+                resized_face = cv2.resize(face_img, (100, 100))
+                success, buffer = cv2.imencode('.jpg', resized_face)
+                if not success:
+                    logging.warning(f"Failed to encode face {i} from {img_path}, skipping base64")
+                    face_base64 = ""
+                else:
+                    face_base64 = base64.b64encode(buffer).decode("utf-8")
+            except Exception as e:
+                logging.error(f"Error processing face image {i} from {img_path}: {str(e)}")
+                face_base64 = ""
+            
+            # Generate a unique ID for this face
             face_id = uuid.uuid4()
             checksum = hashlib.sha256(img_path.encode()).hexdigest()
+            
+            # Insert this face and its embedding
             statement = f"""
                 INSERT INTO identities
-                    (id, event_code, img_name, embedding, checksum_sha256)
+                    (id, event_code, img_name, embedding, faces_base64, checksum_sha256)
                     VALUES
-                    ('{face_id}', '{event_code}', '{os.path.basename(img_path)}', '{str(embedding)}', '{checksum}')
+                    ('{face_id}', '{event_code}', '{os.path.basename(img_path)}', '{str(embedding)}', '{face_base64}', '{checksum}')
             """
             
             cursor.execute(statement)
@@ -332,14 +494,12 @@ def has_face(img_path):
         )
         
         if len(faces) > 0:
-            print(f"OpenCV pre-screening found {len(faces)} potential faces in {img_path}")
             return True
         else:
-            print(f"No faces found in pre-screening of {img_path}")
             return False
             
     except Exception as e:
-        print(f"Error processing {img_path}: {e}")
+        logging.error(f"Error processing {img_path}: {e}")
         return False
 
 def search_target_image(target_path, show_plots=False):
@@ -375,9 +535,9 @@ def search_target_image(target_path, show_plots=False):
         # Get the embedding of the target image
         objs = DeepFace.represent(
             img_path=target_path,
-            model_name="Facenet",
+            model_name="Facenet512",
             detector_backend="retinaface",
-            enforce_detection=True
+            enforce_detection=False
         )
 
         if not objs:
