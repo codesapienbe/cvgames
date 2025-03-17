@@ -48,26 +48,47 @@ def get_connection():
         logging.error(f"Error creating database connection: {str(e)}")
         raise
 
-async def init_database():
-    """Initialize the database with required tables and extensions"""
+async def init_database(drop_table=False):
+    """
+    Initialize the database with required tables and extensions
+    
+    Args:
+        drop_table: Whether to drop existing tables (default: False)
+    """
     conn = None
     cursor = None
     try:
         conn = get_connection()
         cursor = conn.cursor()
         
+        # Create vector extension
         cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        cursor.execute("DROP TABLE IF EXISTS identities;")
-        cursor.execute("""
-            CREATE TABLE identities (
-                ID UUID PRIMARY KEY,
-                EVENT_CODE VARCHAR(100),
-                IMG_NAME VARCHAR(100),
-                EMBEDDING vector(512),
-                FACES_BASE64 TEXT,
-                CHECKSUM_SHA256 VARCHAR(64)
-            );
-        """)
+        
+        # Check if table exists
+        cursor.execute("SELECT EXISTS(SELECT 1 FROM information_schema.tables WHERE table_name = 'identities')")
+        table_exists = cursor.fetchone()[0]
+        
+        if table_exists:
+            if drop_table:
+                logging.warning("Dropping existing identities table")
+                cursor.execute("DROP TABLE IF EXISTS identities;")
+                table_exists = False
+            else:
+                logging.info("Using existing identities table")
+        
+        # Create table if it doesn't exist
+        if not table_exists:
+            cursor.execute("""
+                CREATE TABLE identities (
+                    ID UUID PRIMARY KEY,
+                    EVENT_CODE VARCHAR(100),
+                    IMG_NAME VARCHAR(100),
+                    EMBEDDING vector(512),
+                    FACES_BASE64 TEXT,
+                    CHECKSUM_SHA256 VARCHAR(64)
+                );
+            """)
+            logging.info("Created new identities table")
         
         conn.commit()
         logging.info("Database initialized successfully")
@@ -434,16 +455,17 @@ async def process_image(img_path, event_code):
     return face_count
 
 
-async def process_images_from_dir(source_dir="events"):
+async def process_images_from_dir(source_dir="events", drop_table=False):
     """
     Process all images from a directory and save the embeddings to the database
     
     Args:
         source_dir: Directory containing images to process
+        drop_table: Whether to drop existing tables (default: False)
     """
-    # Initialize database
+    # Initialize database without dropping the table by default
     try:
-        await init_database()
+        await init_database(drop_table=drop_table)
     except Exception as e:
         logging.error(f"Failed to initialize database: {str(e)}")
         return 0
@@ -475,10 +497,13 @@ async def process_images_from_dir(source_dir="events"):
             skipped_images += 1
             logging.info(f"Skipped image {i+1}/{total_files} - No faces detected: {img_path}")
             continue
-        
-        total_faces += face_count
-        processed_images += 1
-        logging.info(f"Processed image {i+1}/{total_files} with {face_count} faces: {img_path}")
+        elif face_count == 0:  # Duplicate or no faces
+            skipped_images += 1
+            logging.info(f"Skipped image {i+1}/{total_files} - Already processed or no faces: {img_path}")
+        else:
+            total_faces += face_count
+            processed_images += 1
+            logging.info(f"Processed image {i+1}/{total_files} with {face_count} faces: {img_path}")
         
         # Force garbage collection after each image
         gc.collect()
@@ -486,34 +511,48 @@ async def process_images_from_dir(source_dir="events"):
     logging.info(f"Processing summary:")
     logging.info(f"- Total images: {total_files}")
     logging.info(f"- Successfully processed: {processed_images}")
-    logging.info(f"- Skipped (no faces): {skipped_images}")
+    logging.info(f"- Skipped (duplicates or no faces): {skipped_images}")
     logging.info(f"- Total faces detected: {total_faces}")
     
-    # Create index after all processing is complete
-    conn = None
-    cursor = None
-    try:
-        conn = get_connection()
-        cursor = conn.cursor()
-        
-        tic = time.time()
-        logging.info("Creating HNSW index on embeddings...")
-        cursor.execute(
-            "CREATE INDEX ON identities USING hnsw (embedding vector_l2_ops);"
-        )
-        conn.commit()
-        toc = time.time()
-        logging.info(f"Index created in {round(toc-tic, 2)} seconds")
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        logging.error(f"Error creating index: {str(e)}")
-        logging.error(traceback.format_exc())
-    finally:
-        if cursor:
-            cursor.close()
-        if conn:
-            conn.close()
+    # Create index after all processing is complete if we processed images
+    if processed_images > 0:
+        conn = None
+        cursor = None
+        try:
+            conn = get_connection()
+            cursor = conn.cursor()
+            
+            # Check if index already exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT 1 
+                    FROM pg_indexes 
+                    WHERE indexname LIKE '%identities%' AND indexdef LIKE '%hnsw%'
+                )
+            """)
+            index_exists = cursor.fetchone()[0]
+            
+            if not index_exists:
+                tic = time.time()
+                logging.info("Creating HNSW index on embeddings...")
+                cursor.execute(
+                    "CREATE INDEX ON identities USING hnsw (embedding vector_l2_ops);"
+                )
+                conn.commit()
+                toc = time.time()
+                logging.info(f"Index created in {round(toc-tic, 2)} seconds")
+            else:
+                logging.info("HNSW index already exists on embeddings")
+        except Exception as e:
+            if conn:
+                conn.rollback()
+            logging.error(f"Error creating index: {str(e)}")
+            logging.error(traceback.format_exc())
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
     
     return total_faces
 
@@ -711,10 +750,15 @@ async def main():
     args = parse_arguments()
     
     try:
+        # Handle database initialization if requested
+        if args.init:
+            logging.info(f"Initializing database (drop table: {args.drop})")
+            await init_database(drop_table=args.drop)
+        
         # Process images and save to database
         if args.save:
             logging.info(f"Processing images from source directory: {args.source}")
-            await process_images_from_dir(source_dir=args.source)
+            await process_images_from_dir(source_dir=args.source, drop_table=args.drop)
         
         # Handle target image operations
         if args.target:
@@ -734,12 +778,9 @@ async def main():
                 logging.error(f"Target image not found: {args.target}")
                 
         # If no arguments provided, show usage
-        if not (args.save or args.target):
-            logging.info("No actions specified. Use --save to process images or --target to specify a target image.")
+        if not (args.save or args.target or args.init):
+            logging.info("No actions specified. Use --save to process images, --target to specify a target image, or --init to initialize the database.")
             logging.info("Run with --help for more information.")
-
-        if args.init:
-            await init_database()
             
     except KeyboardInterrupt:
         logging.info("Process interrupted by user")
@@ -767,7 +808,10 @@ def parse_arguments():
                         help="Show plots when searching (default: False, returns JSON)")
     
     parser.add_argument("--init", action="store_true",
-                        help="Initialize the database")
+                        help="Initialize the database (doesn't drop tables by default)")
+                        
+    parser.add_argument("--drop", action="store_true",
+                        help="Drop existing tables when initializing (use with --init or --save)")
     
     return parser.parse_args()
 
