@@ -6,3 +6,4 @@ tensorflow>=2.13.0
 screeninfo
 pygame>=2.5.0
 cvzone
+tf-keras
