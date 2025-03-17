@@ -1,8 +1,8 @@
-# Start Generation Here
-opencv-python
-mediapipe
-numpy
+mediapipe>=0.10.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+deepface>=0.0.79
+tensorflow>=2.13.0
 screeninfo
-playsound
+pygame>=2.5.0
 cvzone
-# End Generation Here

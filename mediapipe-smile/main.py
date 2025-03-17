@@ -8,11 +8,46 @@ import os
 import json
 import time
 from typing import Tuple, List, Dict
+from deepface import DeepFace
 
 # Add training data directory
 TRAINING_DATA_DIR = "training_data"
 if not os.path.exists(TRAINING_DATA_DIR):
     os.makedirs(TRAINING_DATA_DIR)
+
+class DeepFaceAnalyzer:
+    """Class to handle DeepFace emotion analysis"""
+    def __init__(self):
+        self.emotions = ['angry', 'disgust', 'fear', 'happy', 'sad', 'surprise', 'neutral']
+        self.last_result = None
+        
+    def analyze(self, frame) -> Dict[str, float]:
+        """Analyze frame using DeepFace"""
+        try:
+            # Analyze emotions using DeepFace with optimized settings
+            result = DeepFace.analyze(frame, 
+                                    actions=['emotion'],
+                                    enforce_detection=False,
+                                    silent=True,
+                                    detector_backend='opencv')  # Use OpenCV backend for faster detection
+            
+            if isinstance(result, list):
+                result = result[0]
+                
+            # Extract emotion probabilities
+            emotions = result.get('emotion', {})
+            
+            # Normalize probabilities to 0-1 range
+            total = sum(emotions.values())
+            if total > 0:
+                emotions = {k: v/total for k, v in emotions.items()}
+            
+            self.last_result = emotions
+            return emotions
+            
+        except Exception as e:
+            print(f"DeepFace analysis error: {e}")
+            return self.last_result if self.last_result else {}
 
 class FaceLandmarks:
     """Class to hold face landmark constants and helper methods"""
@@ -187,6 +222,40 @@ class FaceLandmarks:
         
         return (eye_symmetry + mouth_symmetry) / 2
 
+    @staticmethod
+    def angle(p1: Tuple[int, int], p2: Tuple[int, int], p3: Tuple[int, int]) -> float:
+        """Calculate the angle between three points in degrees"""
+        # Calculate vectors
+        v1 = np.array([p1[0] - p2[0], p1[1] - p2[1]])
+        v2 = np.array([p3[0] - p2[0], p3[1] - p2[1]])
+        
+        # Calculate dot product
+        dot_product = np.dot(v1, v2)
+        
+        # Calculate magnitudes
+        mag1 = np.linalg.norm(v1)
+        mag2 = np.linalg.norm(v2)
+        
+        # Avoid division by zero
+        if mag1 == 0 or mag2 == 0:
+            return 0.0
+            
+        # Calculate angle in radians
+        cos_angle = dot_product / (mag1 * mag2)
+        # Clamp cos_angle to [-1, 1] to avoid numerical errors
+        cos_angle = max(min(cos_angle, 1.0), -1.0)
+        angle_rad = np.arccos(cos_angle)
+        
+        # Convert to degrees
+        angle_deg = np.degrees(angle_rad)
+        
+        # Calculate cross product to determine sign
+        cross_product = np.cross(v1, v2)
+        if cross_product < 0:
+            angle_deg = -angle_deg
+            
+        return angle_deg
+
 class Emotion:
     def __init__(self, threshold: float, reset_threshold: float, name: str, emoji: str, color: Tuple[int, int, int]):
         self.threshold = threshold
@@ -290,30 +359,37 @@ class Happy(Emotion):
         face_width = fl.distance(get_landmark(fl.LEFT_CHEEK), get_landmark(fl.RIGHT_CHEEK))
         width_ratio = mouth_width / face_width if face_width > 0 else 0
         
-        # Calculate mouth openness
-        mouth_height = fl.distance(upper_lip_bottom, lower_lip_top)
+        # Calculate mouth openness using both top and bottom points
+        mouth_height = fl.distance(upper_lip_top, lower_lip_bottom)
         openness_ratio = mouth_height / mouth_width if mouth_width > 0 else 0
         
         # Calculate mid-point curve
         mid_curve = lower_lip_mid[1] - upper_lip_mid[1]
         
-        # Enhanced smile ratio calculation with more focus on curve
+        # Calculate lip symmetry using top and bottom points
+        upper_symmetry = abs(upper_lip_top[1] - upper_lip_bottom[1])
+        lower_symmetry = abs(lower_lip_top[1] - lower_lip_bottom[1])
+        symmetry_score = 1 - (upper_symmetry + lower_symmetry) / (2 * mouth_width) if mouth_width > 0 else 0
+        
+        # Enhanced smile ratio calculation with more focus on curve and symmetry
         if mouth_width > 0:
             # Consider multiple factors with adjusted weights:
-            # 1. Upward curve of mouth (50% weight)
+            # 1. Upward curve of mouth (40% weight)
             # 2. Appropriate mouth width (20% weight)
             # 3. Moderate mouth openness (20% weight)
             # 4. Mid-point curve (10% weight)
+            # 5. Lip symmetry (10% weight)
             curve_ratio = min(max(curve / 5, 0), 1)  # Normalize curve with smaller divisor for more sensitivity
             width_ratio = min(max(width_ratio - 0.2, 0), 1)  # Adjusted range for more natural smiles
             openness = min(max(openness_ratio - 0.05, 0), 1)  # Adjusted range for more natural smiles
             mid_curve_ratio = min(max(mid_curve / 5, 0), 1)  # Normalize mid-point curve
             
             smile_ratio = (
-                curve_ratio * 0.5 +
+                curve_ratio * 0.4 +
                 width_ratio * 0.2 +
                 openness * 0.2 +
-                mid_curve_ratio * 0.1
+                mid_curve_ratio * 0.1 +
+                symmetry_score * 0.1
             )
             
             # Apply a sigmoid function to make the detection more natural
@@ -324,29 +400,81 @@ class Happy(Emotion):
         return True, smile_ratio
 
 class Sad(Emotion):
-    def __init__(self, threshold: float = 0.2, reset_threshold: float = 0.15):
-        super().__init__(threshold, reset_threshold, "Sad", "😢", (255, 0, 0))  # Blue
+    def __init__(self, threshold: float = 0.35, reset_threshold: float = 0.25):
+        super().__init__(threshold, reset_threshold, "Sad", "😢", (0, 0, 255))  # Blue
         
     def detect(self, landmarks, image_width: int, image_height: int) -> Tuple[bool, float]:
-        def get_landmark(index):
-            point = landmarks.landmark[index]
-            return int(point.x * image_width), int(point.y * image_height)
+        fl = FaceLandmarks
+        get_landmark = lambda idx: fl.get_landmark(landmarks, idx, image_width, image_height)
+        
+        # Get mouth landmarks
+        left_corner = get_landmark(fl.LEFT_MOUTH_CORNER)
+        right_corner = get_landmark(fl.RIGHT_MOUTH_CORNER)
+        upper_lip = get_landmark(fl.UPPER_LIP_TOP)
+        lower_lip = get_landmark(fl.LOWER_LIP_BOTTOM)
+        
+        # Get eyebrow landmarks using correct indices
+        left_eyebrow_left = get_landmark(fl.LEFT_EYEBROW_LEFT)
+        left_eyebrow_right = get_landmark(fl.LEFT_EYEBROW_RIGHT)
+        right_eyebrow_left = get_landmark(fl.RIGHT_EYEBROW_LEFT)
+        right_eyebrow_right = get_landmark(fl.RIGHT_EYEBROW_RIGHT)
+        
+        # Get eye landmarks for reference using correct indices
+        left_eye_left = get_landmark(fl.LEFT_EYE_LEFT)
+        left_eye_right = get_landmark(fl.LEFT_EYE_RIGHT)
+        right_eye_left = get_landmark(fl.RIGHT_EYE_LEFT)
+        right_eye_right = get_landmark(fl.RIGHT_EYE_RIGHT)
+        
+        # Calculate face width for normalization
+        face_width = fl.distance(left_eye_left, right_eye_right)
+        
+        if face_width > 0:
+            # 1. Downturned mouth corners (40% weight)
+            mouth_width = fl.distance(left_corner, right_corner)
+            mouth_height = fl.distance(upper_lip, lower_lip)
+            mouth_ratio = mouth_width / face_width
             
-        # Check for downturned mouth corners
-        left_corner = get_landmark(FaceLandmarks.LEFT_MOUTH_CORNER)
-        right_corner = get_landmark(FaceLandmarks.RIGHT_MOUTH_CORNER)
-        center = get_landmark(FaceLandmarks.LOWER_LIP_BOTTOM)
-        
-        # Measure how much the corners are turned down
-        corner_avg_y = (left_corner[1] + right_corner[1]) / 2
-        mouth_width = FaceLandmarks.distance(left_corner, right_corner)
-        
-        # Enhanced sad ratio calculation
-        if mouth_width > 0:
-            # Consider both the corner downturn and mouth width
-            downturn_ratio = max(0, (corner_avg_y - center[1]) / (mouth_width * 0.3))
-            width_ratio = mouth_width / image_width  # Normalize by image width
-            sad_ratio = downturn_ratio * 0.7 + width_ratio * 0.3
+            # Calculate corner angles
+            left_corner_angle = fl.angle(left_corner, upper_lip, lower_lip)
+            right_corner_angle = fl.angle(right_corner, upper_lip, lower_lip)
+            corner_angles = (left_corner_angle + right_corner_angle) / 2
+            
+            # Mouth score based on width and corner angles
+            mouth_score = min(max(
+                (1 - mouth_ratio) * (corner_angles / 180),  # Wider mouth with downturned corners
+                0
+            ), 1)
+            
+            # 2. Lowered eyebrows (30% weight)
+            left_eyebrow_height = fl.distance(left_eyebrow_left, left_eye_left)
+            right_eyebrow_height = fl.distance(right_eyebrow_left, right_eye_left)
+            eyebrow_height = (left_eyebrow_height + right_eyebrow_height) / 2
+            
+            # Calculate eyebrow angles
+            left_eyebrow_angle = fl.angle(left_eyebrow_left, left_eyebrow_right, left_eye_left)
+            right_eyebrow_angle = fl.angle(right_eyebrow_left, right_eyebrow_right, right_eye_left)
+            eyebrow_angles = (left_eyebrow_angle + right_eyebrow_angle) / 2
+            
+            # Eyebrow score based on height and angles
+            eyebrow_score = min(max(
+                (1 - eyebrow_height / face_width) * (eyebrow_angles / 180),  # Lowered eyebrows with negative angles
+                0
+            ), 1)
+            
+            # 3. Overall face shape (30% weight)
+            face_height = fl.distance(upper_lip, lower_lip)
+            face_ratio = face_height / face_width
+            face_score = min(max(face_ratio - 0.3, 0), 1)  # Longer face shape
+            
+            # Combine all factors
+            sad_ratio = (
+                mouth_score * 0.4 +
+                eyebrow_score * 0.3 +
+                face_score * 0.3
+            )
+            
+            # Apply a sigmoid function to make the detection more natural
+            sad_ratio = 1 / (1 + np.exp(-5 * (sad_ratio - 0.5)))
         else:
             sad_ratio = 0
             
@@ -372,14 +500,15 @@ class Angry(Emotion):
         left_corner = get_landmark(fl.LEFT_MOUTH_CORNER)
         right_corner = get_landmark(fl.RIGHT_MOUTH_CORNER)
         
+        # Get eye positions for eyebrow height reference
+        left_eye_top = get_landmark(fl.LEFT_EYE_TOP)
+        right_eye_top = get_landmark(fl.RIGHT_EYE_TOP)
+        
         # Calculate eyebrow angles
         left_eyebrow_angle = fl.get_eyebrow_angle(landmarks, image_width, image_height, True)
         right_eyebrow_angle = fl.get_eyebrow_angle(landmarks, image_width, image_height, False)
         
         # Calculate eyebrow height relative to eyes
-        left_eye_top = get_landmark(fl.LEFT_EYE_TOP)
-        right_eye_top = get_landmark(fl.RIGHT_EYE_TOP)
-        
         left_eyebrow_height = abs(left_eyebrow_left[1] - left_eye_top[1])
         right_eyebrow_height = abs(right_eyebrow_left[1] - right_eye_top[1])
         
@@ -387,8 +516,10 @@ class Angry(Emotion):
         mouth_width = fl.distance(left_corner, right_corner)
         lip_distance = fl.distance(upper_lip, lower_lip)
         
-        # Enhanced anger detection with multiple factors
-        if mouth_width > 0:
+        # Calculate face width for normalization
+        face_width = fl.distance(get_landmark(fl.LEFT_CHEEK), get_landmark(fl.RIGHT_CHEEK))
+        
+        if mouth_width > 0 and face_width > 0:
             # 1. Eyebrow angle (40% weight)
             # Angry eyebrows are typically angled downward
             left_eyebrow_score = min(max((left_eyebrow_angle + 15) / 30, 0), 1)
@@ -404,7 +535,7 @@ class Angry(Emotion):
             
             # 4. Mouth width (20% weight)
             # Angry expressions often have a wider mouth
-            width_ratio = mouth_width / image_width
+            width_ratio = mouth_width / face_width
             
             # Combine all factors
             anger_ratio = (
@@ -413,6 +544,9 @@ class Angry(Emotion):
                 compression_ratio * 0.2 +
                 width_ratio * 0.2
             )
+            
+            # Apply a sigmoid function to make the detection more natural
+            anger_ratio = 1 / (1 + np.exp(-5 * (anger_ratio - 0.5)))
         else:
             anger_ratio = 0
             
@@ -423,24 +557,50 @@ class Surprised(Emotion):
         super().__init__(threshold, reset_threshold, "Surprised", "😮", (255, 255, 0))  # Cyan
         
     def detect(self, landmarks, image_width: int, image_height: int) -> Tuple[bool, float]:
-        def get_landmark(index):
-            point = landmarks.landmark[index]
-            return int(point.x * image_width), int(point.y * image_height)
+        fl = FaceLandmarks
+        get_landmark = lambda idx: fl.get_landmark(landmarks, idx, image_width, image_height)
             
-        upper_lip_top = get_landmark(FaceLandmarks.UPPER_LIP_TOP)
-        lower_lip_bottom = get_landmark(FaceLandmarks.LOWER_LIP_BOTTOM)
-        left_corner = get_landmark(FaceLandmarks.LEFT_MOUTH_CORNER)
-        right_corner = get_landmark(FaceLandmarks.RIGHT_MOUTH_CORNER)
+        # Get mouth landmarks
+        upper_lip_top = get_landmark(fl.UPPER_LIP_TOP)
+        lower_lip_bottom = get_landmark(fl.LOWER_LIP_BOTTOM)
+        left_corner = get_landmark(fl.LEFT_MOUTH_CORNER)
+        right_corner = get_landmark(fl.RIGHT_MOUTH_CORNER)
         
-        # Enhanced surprise detection
-        mouth_height = FaceLandmarks.distance(upper_lip_top, lower_lip_bottom)
-        mouth_width = FaceLandmarks.distance(left_corner, right_corner)
+        # Get eye landmarks for eye state detection
+        left_eye_points = [
+            fl.LEFT_EYE_LEFT, fl.LEFT_EYE_RIGHT,
+            fl.LEFT_EYE_TOP, fl.LEFT_EYE_BOTTOM,
+            fl.LEFT_EYE_TOP_2, fl.LEFT_EYE_BOTTOM_2
+        ]
+        right_eye_points = [
+            fl.RIGHT_EYE_LEFT, fl.RIGHT_EYE_RIGHT,
+            fl.RIGHT_EYE_TOP, fl.RIGHT_EYE_BOTTOM,
+            fl.RIGHT_EYE_TOP_2, fl.RIGHT_EYE_BOTTOM_2
+        ]
+        
+        # Calculate mouth metrics
+        mouth_height = fl.distance(upper_lip_top, lower_lip_bottom)
+        mouth_width = fl.distance(left_corner, right_corner)
+        
+        # Calculate eye aspect ratios
+        left_eye_ratio = fl.get_eye_aspect_ratio(landmarks, left_eye_points, image_width, image_height)
+        right_eye_ratio = fl.get_eye_aspect_ratio(landmarks, right_eye_points, image_width, image_height)
+        avg_eye_ratio = (left_eye_ratio + right_eye_ratio) / 2
         
         if mouth_width > 0:
             # Consider both circularity and size
             circularity = mouth_height / mouth_width
             size_ratio = mouth_width / image_width
-            surprise_ratio = circularity * 0.7 + size_ratio * 0.3
+            
+            # Calculate eye score (should be high for surprised)
+            eye_score = min(max(avg_eye_ratio * 3 - 0.5, 0), 1)  # More emphasis on open eyes
+            
+            # Combine all factors with emphasis on eye openness
+            surprise_ratio = (
+                circularity * 0.2 +      # Mouth shape
+                size_ratio * 0.2 +       # Mouth size
+                eye_score * 0.6          # Eye openness (increased weight to 60%)
+            )
         else:
             surprise_ratio = 0
             
@@ -506,24 +666,69 @@ class Kiss(Emotion):
         super().__init__(threshold, reset_threshold, "Kiss", "😘", (255, 192, 203))  # Pink
         
     def detect(self, landmarks, image_width: int, image_height: int) -> Tuple[bool, float]:
-        def get_landmark(index):
-            point = landmarks.landmark[index]
-            return int(point.x * image_width), int(point.y * image_height)
+        fl = FaceLandmarks
+        get_landmark = lambda idx: fl.get_landmark(landmarks, idx, image_width, image_height)
         
-        # Enhanced kiss detection
-        left_corner = get_landmark(FaceLandmarks.LEFT_MOUTH_CORNER)
-        right_corner = get_landmark(FaceLandmarks.RIGHT_MOUTH_CORNER)
-        upper_lip = get_landmark(FaceLandmarks.UPPER_LIP_TOP)
-        lower_lip = get_landmark(FaceLandmarks.LOWER_LIP_BOTTOM)
+        # Get mouth landmarks
+        upper_lip_top = get_landmark(fl.UPPER_LIP_TOP)
+        lower_lip_bottom = get_landmark(fl.LOWER_LIP_BOTTOM)
+        left_corner = get_landmark(fl.LEFT_MOUTH_CORNER)
+        right_corner = get_landmark(fl.RIGHT_MOUTH_CORNER)
+        upper_lip_mid = get_landmark(fl.UPPER_LIP_MID)
+        lower_lip_mid = get_landmark(fl.LOWER_LIP_MID)
         
-        mouth_width = FaceLandmarks.distance(left_corner, right_corner)
-        mouth_height = FaceLandmarks.distance(upper_lip, lower_lip)
+        # Get eye landmarks for eye state detection
+        left_eye_points = [
+            fl.LEFT_EYE_LEFT, fl.LEFT_EYE_RIGHT,
+            fl.LEFT_EYE_TOP, fl.LEFT_EYE_BOTTOM,
+            fl.LEFT_EYE_TOP_2, fl.LEFT_EYE_BOTTOM_2
+        ]
+        right_eye_points = [
+            fl.RIGHT_EYE_LEFT, fl.RIGHT_EYE_RIGHT,
+            fl.RIGHT_EYE_TOP, fl.RIGHT_EYE_BOTTOM,
+            fl.RIGHT_EYE_TOP_2, fl.RIGHT_EYE_BOTTOM_2
+        ]
         
-        if mouth_height > 0:
-            # Consider both puckering and mouth size
-            pucker_ratio = (mouth_height / mouth_width) if mouth_width > 0 else 0
-            size_ratio = mouth_width / image_width
-            kiss_ratio = pucker_ratio * 0.6 + size_ratio * 0.4
+        # Calculate mouth metrics
+        mouth_width = fl.distance(left_corner, right_corner)
+        mouth_height = fl.distance(upper_lip_top, lower_lip_bottom)
+        
+        # Calculate mouth center point
+        center_x = (left_corner[0] + right_corner[0]) / 2
+        center_y = (upper_lip_top[1] + lower_lip_bottom[1]) / 2
+        
+        # Calculate puckering metrics
+        pucker_height = fl.distance(upper_lip_mid, lower_lip_mid)
+        corner_height = (fl.distance(upper_lip_top, left_corner) + 
+                        fl.distance(upper_lip_top, right_corner)) / 2
+        
+        # Calculate eye aspect ratios
+        left_eye_ratio = fl.get_eye_aspect_ratio(landmarks, left_eye_points, image_width, image_height)
+        right_eye_ratio = fl.get_eye_aspect_ratio(landmarks, right_eye_points, image_width, image_height)
+        avg_eye_ratio = (left_eye_ratio + right_eye_ratio) / 2
+        
+        if mouth_width > 0:
+            # Calculate ratios
+            pucker_ratio = pucker_height / mouth_width
+            corner_ratio = corner_height / mouth_width
+            height_ratio = mouth_height / mouth_width
+            
+            # Calculate puckering score
+            pucker_score = min(max(pucker_ratio - 0.3, 0), 1)  # Should be relatively high
+            corner_score = min(max(1 - corner_ratio, 0), 1)    # Should be relatively low
+            height_score = min(max(1 - height_ratio, 0), 1)    # Should be relatively low
+            
+            # Calculate eye score (should be very low for kiss)
+            # Normal eye ratio is around 0.2-0.3, for kiss it should be much lower
+            eye_score = min(max(1 - avg_eye_ratio * 3, 0), 1)  # More emphasis on closed eyes
+            
+            # Combine scores with weights
+            kiss_ratio = (
+                pucker_score * 0.3 +    # Puckering is important
+                corner_score * 0.2 +    # Corners should be pulled in
+                height_score * 0.2 +    # Overall height should be small
+                eye_score * 0.3         # Eyes should be mostly closed (increased weight)
+            )
         else:
             kiss_ratio = 0
             
@@ -537,26 +742,56 @@ class Disgusted(Emotion):
         fl = FaceLandmarks
         get_landmark = lambda idx: fl.get_landmark(landmarks, idx, image_width, image_height)
         
-        # Enhanced disgust detection
+        # Get nose and cheek landmarks
+        nose_tip = get_landmark(fl.NOSE_TIP)
+        nose_bridge = get_landmark(fl.NOSE_BRIDGE)
+        nose_left = get_landmark(fl.NOSE_LEFT)
+        nose_right = get_landmark(fl.NOSE_RIGHT)
+        nose_bottom = get_landmark(fl.NOSE_BOTTOM)
+        
+        # Get cheek landmarks
         left_cheek_inner = get_landmark(fl.LEFT_CHEEK_INNER)
         right_cheek_inner = get_landmark(fl.RIGHT_CHEEK_INNER)
         left_cheek_outer = get_landmark(fl.LEFT_CHEEK_OUTER)
         right_cheek_outer = get_landmark(fl.RIGHT_CHEEK_OUTER)
-        nose_tip = get_landmark(fl.NOSE_TIP)
-        upper_lip = get_landmark(fl.UPPER_LIP_TOP)
         
-        left_cheek_width = fl.distance(left_cheek_inner, left_cheek_outer)
-        right_cheek_width = fl.distance(right_cheek_inner, right_cheek_outer)
-        nose_lip_distance = fl.distance(nose_tip, upper_lip)
+        # Get mouth landmarks
+        upper_lip = get_landmark(fl.UPPER_LIP_TOP)
+        lower_lip = get_landmark(fl.LOWER_LIP_BOTTOM)
+        left_corner = get_landmark(fl.LEFT_MOUTH_CORNER)
+        right_corner = get_landmark(fl.RIGHT_MOUTH_CORNER)
+        
+        # Calculate face width for normalization
         face_width = fl.distance(left_cheek_outer, right_cheek_outer)
         
         if face_width > 0:
-            # Enhanced disgust ratio calculation
+            # 1. Nose wrinkling (40% weight)
+            nose_width = fl.distance(nose_left, nose_right)
+            nose_height = fl.distance(nose_bridge, nose_bottom)
+            nose_ratio = nose_width / nose_height if nose_height > 0 else 0
+            nose_score = min(max(nose_ratio - 0.5, 0), 1)  # Wrinkled nose is wider
+            
+            # 2. Cheek raising (30% weight)
+            left_cheek_width = fl.distance(left_cheek_inner, left_cheek_outer)
+            right_cheek_width = fl.distance(right_cheek_inner, right_cheek_outer)
             cheek_ratio = (left_cheek_width + right_cheek_width) / (2 * face_width)
-            nose_lip_ratio = 1.0 - (nose_lip_distance / face_width)
-            mouth_width = fl.distance(get_landmark(fl.LEFT_MOUTH_CORNER), get_landmark(fl.RIGHT_MOUTH_CORNER))
-            mouth_ratio = mouth_width / face_width
-            disgust_ratio = (cheek_ratio * 0.4 + nose_lip_ratio * 0.4 + mouth_ratio * 0.2)
+            cheek_score = min(max(cheek_ratio - 0.2, 0), 1)  # Raised cheeks are wider
+            
+            # 3. Mouth shape (30% weight)
+            mouth_width = fl.distance(left_corner, right_corner)
+            mouth_height = fl.distance(upper_lip, lower_lip)
+            mouth_height_ratio = mouth_height / mouth_width if mouth_width > 0 else 0
+            mouth_score = min(max(mouth_height_ratio * (1 - mouth_height_ratio), 0), 1)  # Wide, compressed mouth
+            
+            # Combine all factors
+            disgust_ratio = (
+                nose_score * 0.4 +
+                cheek_score * 0.3 +
+                mouth_score * 0.3
+            )
+            
+            # Apply a sigmoid function to make the detection more natural
+            disgust_ratio = 1 / (1 + np.exp(-5 * (disgust_ratio - 0.5)))
         else:
             disgust_ratio = 0
             
@@ -573,12 +808,12 @@ class Sleepy(Emotion):
         left_eye_points = [
             fl.LEFT_EYE_LEFT, fl.LEFT_EYE_RIGHT,
             fl.LEFT_EYE_TOP, fl.LEFT_EYE_BOTTOM,
-            fl.LEFT_EYE_TOP, fl.LEFT_EYE_BOTTOM
+            fl.LEFT_EYE_TOP_2, fl.LEFT_EYE_BOTTOM_2
         ]
         right_eye_points = [
             fl.RIGHT_EYE_LEFT, fl.RIGHT_EYE_RIGHT,
             fl.RIGHT_EYE_TOP, fl.RIGHT_EYE_BOTTOM,
-            fl.RIGHT_EYE_TOP, fl.RIGHT_EYE_BOTTOM
+            fl.RIGHT_EYE_TOP_2, fl.RIGHT_EYE_BOTTOM_2
         ]
         
         left_eye_ratio = fl.get_eye_aspect_ratio(landmarks, left_eye_points, image_width, image_height)
@@ -726,7 +961,7 @@ class EmotionTrainer:
         )
         
     def initialize_camera(self) -> bool:
-        """Initialize the camera"""
+        """Initialize the camera with error handling"""
         print(f"Attempting to open camera {self.camera_index}...")
         try:
             self.cap = cv2.VideoCapture(self.camera_index)
@@ -734,11 +969,25 @@ class EmotionTrainer:
                 print(f"Failed to open camera {self.camera_index}")
                 return False
             
-            # Set camera properties
+            # Set camera properties for maximum performance
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.cap.set(cv2.CAP_PROP_FPS, 30)
+            self.cap.set(cv2.CAP_PROP_FPS, 60)  # Try to get 60 FPS
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize buffer size
             
+            # Set additional camera properties for better performance
+            self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # Disable autofocus
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # Disable auto exposure
+            
+            # Try to read a frame to verify camera is working
+            ret, frame = self.cap.read()
+            if not ret:
+                print("Failed to read from camera")
+                return False
+            
+            print(f"Successfully initialized camera {self.camera_index}")
+            print(f"Frame size: {frame.shape}")
+            print(f"FPS: {self.cap.get(cv2.CAP_PROP_FPS)}")
             return True
         except Exception as e:
             print(f"Error initializing camera: {e}")
@@ -851,6 +1100,15 @@ class EmotionDetector:
         except Exception as e:
             print(f"Error initializing MediaPipe: {e}")
             raise
+            
+        # Initialize DeepFace
+        print("Initializing DeepFace...")
+        try:
+            self.deepface_analyzer = DeepFaceAnalyzer()
+            print("DeepFace initialized successfully")
+        except Exception as e:
+            print(f"Error initializing DeepFace: {e}")
+            raise
         
         # Initialize emotions first with default thresholds
         print("Initializing emotion detectors...")
@@ -862,7 +1120,11 @@ class EmotionDetector:
                 Surprised(), # Circular mouth
                 Sleepy(),    # Eye aspect ratio
                 Einstein(),  # Full tongue-out expression
-                Childish()   # Just the tip of tongue
+                Childish(),  # Just the tip of tongue
+                Neutral(),   # Neutral expression
+                Confused(),  # Asymmetrical expression
+                Kiss(),      # Puckered lips
+                Disgusted()  # Wrinkled nose and raised cheeks
             ]
             print("Emotion detectors initialized successfully")
         except Exception as e:
@@ -950,10 +1212,15 @@ class EmotionDetector:
                 print(f"Failed to open camera {self.camera_index}")
                 return False
             
-            # Set camera properties for better performance
+            # Set camera properties for maximum performance
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-            self.cap.set(cv2.CAP_PROP_FPS, 30)
+            self.cap.set(cv2.CAP_PROP_FPS, 60)  # Try to get 60 FPS
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize buffer size
+            
+            # Set additional camera properties for better performance
+            self.cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)  # Disable autofocus
+            self.cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, 0.25)  # Disable auto exposure
             
             # Try to read a frame to verify camera is working
             ret, frame = self.cap.read()
@@ -963,15 +1230,19 @@ class EmotionDetector:
             
             print(f"Successfully initialized camera {self.camera_index}")
             print(f"Frame size: {frame.shape}")
+            print(f"FPS: {self.cap.get(cv2.CAP_PROP_FPS)}")
             return True
         except Exception as e:
             print(f"Error initializing camera: {e}")
             return False
 
     def process_emotions(self, frame, face_landmarks, width: int, height: int):
-        """Process and display emotions with training data influence"""
+        """Process and display emotions with combined MediaPipe and DeepFace results"""
         max_emotion = None
         max_ratio = 0.0
+        
+        # Get DeepFace analysis results
+        deepface_emotions = self.deepface_analyzer.analyze(frame)
         
         # Process all emotions and find the dominant one
         for emotion in self.emotions:
@@ -996,6 +1267,12 @@ class EmotionDetector:
                     # Adjust ratio based on similarity with training samples
                     avg_similarity = np.mean(similarities)
                     ratio = ratio * (0.7 + 0.3 * avg_similarity)
+            
+            # Combine with DeepFace results
+            if emotion_name in deepface_emotions:
+                deepface_ratio = deepface_emotions[emotion_name]
+                # Weight the combination (60% MediaPipe, 40% DeepFace)
+                ratio = ratio * 0.6 + deepface_ratio * 0.4
             
             if ratio > max_ratio:
                 max_ratio = ratio
@@ -1037,6 +1314,12 @@ class EmotionDetector:
             if self.debug:
                 cv2.putText(frame, f"Confidence: {max_ratio:.2f}", (10, 30),
                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                # Show DeepFace results
+                y_offset = 70
+                for emotion, prob in deepface_emotions.items():
+                    cv2.putText(frame, f"{emotion}: {prob:.2f}", (10, y_offset),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    y_offset += 30
 
     def calculate_landmark_similarity(self, landmarks1: List[Dict], landmarks2: List[Dict]) -> float:
         """Calculate similarity between two sets of landmarks using cosine similarity"""
@@ -1078,13 +1361,34 @@ class EmotionDetector:
         
         return normalized_similarity
 
+    def check_for_new_emotions(self):
+        """Check for new emotion training data every 5 seconds"""
+        try:
+            new_training_data = self.load_training_data()
+            
+            # Compare with existing training data
+            for emotion_name, samples in new_training_data.items():
+                if emotion_name not in self.training_data or len(samples) > len(self.training_data[emotion_name]):
+                    print(f"\nNew training data detected for {emotion_name}")
+                    # Update training data
+                    self.training_data[emotion_name] = samples
+                    # Recalibrate threshold for this emotion
+                    emotion = next(e for e in self.emotions if e.name.lower() == emotion_name)
+                    calibrated_threshold = self.get_calibrated_threshold(emotion_name)
+                    emotion.threshold = calibrated_threshold
+                    emotion.reset_threshold = calibrated_threshold * 0.8
+                    print(f"Updated {emotion_name} threshold: {calibrated_threshold:.3f}")
+        except Exception as e:
+            print(f"Error checking for new emotions: {e}")
+
     def run(self):
-        """Main detection loop with improved error handling"""
+        """Main detection loop with improved error handling and emotion checking"""
         if not self.cap:
             print("Camera not initialized")
             return
 
         print("Starting face mesh detection...")
+        
         with self.mp_face_mesh.FaceMesh(
             max_num_faces=1,
             refine_landmarks=True,
@@ -1092,6 +1396,10 @@ class EmotionDetector:
             min_tracking_confidence=0.5
         ) as face_mesh:
             print("Face mesh detection initialized")
+            
+            # Initialize frame counter for FPS calculation
+            frame_count = 0
+            start_time = time.time()
             
             while self.cap.isOpened():
                 try:
@@ -1121,6 +1429,14 @@ class EmotionDetector:
                                     landmark_drawing_spec=None,
                                     connection_drawing_spec=self.mp_drawing_styles.get_default_face_mesh_tesselation_style()
                                 )
+
+                    # Calculate and display FPS
+                    frame_count += 1
+                    if frame_count % 30 == 0:  # Update FPS display every 30 frames
+                        end_time = time.time()
+                        fps = frame_count / (end_time - start_time)
+                        cv2.putText(frame, f"FPS: {fps:.1f}", (10, 60),
+                                  cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
                     # Display the frame
                     cv2.imshow('Emotion Detection', frame)
@@ -1158,6 +1474,10 @@ def main():
         parser.add_argument('--sleepy', action='store_true', help='Train sleepy emotion')
         parser.add_argument('--einstein', action='store_true', help='Train einstein (tongue-out) emotion')
         parser.add_argument('--childish', action='store_true', help='Train childish (tongue-tip) emotion')
+        parser.add_argument('--neutral', action='store_true', help='Train neutral emotion')
+        parser.add_argument('--confused', action='store_true', help='Train confused emotion')
+        parser.add_argument('--kiss', action='store_true', help='Train kiss emotion')
+        parser.add_argument('--disgusted', action='store_true', help='Train disgusted emotion')
         args = parser.parse_args()
 
         if args.train:
@@ -1178,6 +1498,14 @@ def main():
                 trainer.capture_emotion("einstein")
             elif args.childish:
                 trainer.capture_emotion("childish")
+            elif args.neutral:
+                trainer.capture_emotion("neutral")
+            elif args.confused:
+                trainer.capture_emotion("confused")
+            elif args.kiss:
+                trainer.capture_emotion("kiss")
+            elif args.disgusted:
+                trainer.capture_emotion("disgusted")
             else:
                 print("Please specify an emotion to train using --smile, --sad, --angry, etc.")
         else:

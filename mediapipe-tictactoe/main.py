@@ -4,12 +4,28 @@ import cv2
 import mediapipe as mp
 import math
 from screeninfo import get_monitors
-from playsound import playsound
 from cvzone.HandTrackingModule import HandDetector
 import numpy as np
 import cvzone
 import time
+import pygame
+from deepface import DeepFace
+import os
+import sys
 
+# Initialize pygame mixer
+pygame.mixer.init()
+
+# Load sound effects
+try:
+    beep_sound = pygame.mixer.Sound("beep.mp3")
+    win_sound = pygame.mixer.Sound("win.mp3")
+    lose_sound = pygame.mixer.Sound("lose.mp3")
+except:
+    print("Warning: Sound files not found. Game will run without sound.")
+    beep_sound = None
+    win_sound = None
+    lose_sound = None
 
 class Button:
 
@@ -64,6 +80,15 @@ class Game:
                 return True
                 # Return False if no combination is satisfied
         return False
+
+
+def play_sound(sound):
+    """Play a sound effect using pygame"""
+    if sound:
+        try:
+            sound.play()
+        except:
+            pass  # Ignore any sound playback errors
 
 
 def main():
