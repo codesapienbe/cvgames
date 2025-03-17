@@ -1,9 +1,7 @@
 import cv2
 import mediapipe as mp
-import math
 import argparse
 from screeninfo import get_monitors
-from playsound import playsound
 from cvzone.HandTrackingModule import HandDetector
 import numpy as np
 

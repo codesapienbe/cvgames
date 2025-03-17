@@ -1,0 +1,8 @@
+# Start Generation Here
+opencv-python
+mediapipe
+numpy
+screeninfo
+playsound
+cvzone
+# End Generation Here
