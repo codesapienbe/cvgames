@@ -154,7 +154,12 @@ dmypy.json
 # Cython debug symbols
 cython_debug/
 
-deepface-pgvector/faces/
-deepface-pgvector/events/
-deepface-pgvector/logs/
-deepface-pgvector/lookups/
+deepface-auth/faces/
+deepface-auth/logs/
+deepface-auth/lookups/
+deepface-auth/events/
+deepface-auth/checksums/
+deepface-auth/audios/
+deepface-auth/identities/
+deepface-auth/tmp/
+deepface-auth/uploads/

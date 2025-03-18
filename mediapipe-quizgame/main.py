@@ -1,7 +1,6 @@
 import cv2
 import csv
 from cvzone.HandTrackingModule import HandDetector
-import cvzone
 import time
 import argparse
 import numpy as np
@@ -32,8 +31,25 @@ class MCQ():
         self.choice4 = data[4]
         self.answer = int(data[5])
         self.userAns = None
-        self.hover_start = None  # Track when hovering started
-        self.hover_box = None    # Track which box is being hovered
+        self.hover_start = None
+        self.hover_box = None
+
+    def create_glass_effect(self, img, x1, y1, x2, y2, alpha=0.5):
+        # Create a semi-transparent overlay
+        overlay = img.copy()
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), (30, 30, 30), cv2.FILLED)
+        
+        # Add the overlay with transparency
+        cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0, img)
+        
+        # Add subtle white border for glass effect
+        cv2.rectangle(img, (x1, y1), (x2, y2), (255, 255, 255), 1, cv2.LINE_AA)
+        
+        # Add subtle highlight
+        cv2.line(img, (x1, y1), (x2, y1), (255, 255, 255), 2, cv2.LINE_AA)
+        cv2.line(img, (x1, y1), (x1, y2), (255, 255, 255), 2, cv2.LINE_AA)
+        
+        return img
 
     def update(self, cursor, bboxs, main_img):
         current_time = time.time()
@@ -42,28 +58,31 @@ class MCQ():
         for x, bbox in enumerate(bboxs):
             x1, y1, x2, y2 = bbox
             if x1 < cursor[0] < x2 and y1 < cursor[1] < y2:
-                # Draw hover effect
-                cv2.rectangle(main_img, (x1, y1), (x2, y2), (255, 255, 0), 3)
+                # Glass effect for hover
+                overlay = main_img.copy()
+                cv2.rectangle(overlay, (x1, y1), (x2, y2), (255, 255, 0), cv2.FILLED)
+                cv2.addWeighted(overlay, 0.3, main_img, 0.7, 0, main_img)
+                cv2.rectangle(main_img, (x1, y1), (x2, y2), (255, 255, 255), 2, cv2.LINE_AA)
                 
-                # If hovering over a new box, reset timer
                 if self.hover_box != x:
                     self.hover_start = current_time
                     self.hover_box = x
-                # If hovering over same box for 1 second, select it
                 elif current_time - self.hover_start > 1.0 and self.userAns is None:
                     self.userAns = x + 1
-                    cv2.rectangle(main_img, (x1, y1), (x2, y2), (0, 255, 0), cv2.FILLED)
-                # Draw progress circle while hovering
+                    # Glass effect for selection
+                    overlay = main_img.copy()
+                    cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), cv2.FILLED)
+                    cv2.addWeighted(overlay, 0.4, main_img, 0.6, 0, main_img)
                 elif self.userAns is None:
                     progress = min(1.0, (current_time - self.hover_start) / 1.0)
                     radius = 15
                     center = (x2 - radius - 5, y1 + radius + 5)
-                    cv2.circle(main_img, center, radius, (255, 255, 255), 2)
+                    # Glass effect for progress circle
+                    cv2.circle(main_img, center, radius, (255, 255, 255), 2, cv2.LINE_AA)
                     cv2.ellipse(main_img, center, (radius, radius), 
-                              -90, 0, progress * 360, (0, 255, 0), 3)
+                              -90, 0, progress * 360, (0, 255, 255), 2, cv2.LINE_AA)
                 return
         
-        # If not hovering over any box, reset
         self.hover_box = None
         self.hover_start = None
 
@@ -114,67 +133,49 @@ while True:
     if qNo < qTotal:
         mcq = mcqList[qNo]
 
-        # Create neon effect for question box
-        question_x = 440  # Centered horizontally
+        # Question box with glass effect
+        box_width = 600
+        question_x = (1280 - box_width) // 2  # Center question box using same width as choices
         question_y = 100
-        # Draw question with neon effect
-        main_img, bbox = cvzone.putTextRect(main_img, mcq.question, [question_x, question_y], 1.6, 1, 
-                                          offset=15, border=0,  # Removed border
-                                          colorR=(255, 0, 255),  # Magenta background
-                                          colorT=(255, 255, 255))  # White text
+        mcq.create_glass_effect(main_img, question_x-10, question_y-10, 
+                              question_x + box_width, question_y + 60, alpha=0.3)
+        # Draw question text without background with near-white color
+        cv2.putText(main_img, mcq.question, (question_x + 30, question_y + 30), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, (240, 240, 255), 2, cv2.LINE_AA)
+
+        # Options setup
+        y_gap = 80  # Increased gap for better spacing
+        start_x = (1280 - box_width) // 2  # This calculation is now shared with question box
+        start_y = 200
+        box_height = 60  # Height for all boxes
+
+        # Define colors for glass effect
+        normal_color = (30, 30, 30)
+        hover_color = (255, 255, 0)
+        select_color = (0, 255, 0)
+        text_color = (200, 200, 255)  # Light blue-ish white for better contrast
         
-        # Vertical layout for options with consistent box size
-        box_width = 600  # Fixed width for all boxes
-        y_gap = 70  # Gap between options
-        
-        # Calculate starting x position to center the boxes
-        start_x = (1280 - box_width) // 2  # Center horizontally
-        start_y = 200  # Start options below question
-        
-        # Define colors for different states
-        normal_color = (50, 50, 50)      # Dark gray background
-        hover_color = (255, 255, 0)      # Yellow for hover
-        select_color = (0, 255, 0)       # Green for selected
-        text_color = (255, 255, 255)     # White text
-        border_color = (0, 255, 0)       # Neon green border
-        
-        # Add neon glow effect to boxes
-        def draw_neon_box(img, text, pos, is_hover=False, is_selected=False):
+        def draw_glass_box(img, text, pos, is_hover=False, is_selected=False):
             x, y = pos
-            # First draw a fixed-width background rectangle
-            box_height = 50  # Fixed height for the box
-            x1 = x
-            y1 = y
-            x2 = x + box_width
-            y2 = y + box_height
+            x1, y1 = x, y
+            x2, y2 = x + box_width, y + box_height
             
-            # Draw background rectangle
-            cv2.rectangle(img, (x1, y1), (x2, y2), normal_color, cv2.FILLED)
-            cv2.rectangle(img, (x1, y1), (x2, y2), border_color, 1)
+            # Create glass effect
+            mcq.create_glass_effect(img, x1, y1, x2, y2, alpha=0.3)
             
-            # Calculate text position to center it in the box
-            text_x = x1 + 20  # Add padding from left
-            text_y = y1 + (box_height // 2)  # Vertically center
+            # Add text without background
+            text_x = x1 + 30
+            text_y = y1 + (box_height // 2) + 10  # Adjusted for better vertical centering
+            cv2.putText(img, text, (text_x, text_y), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, text_color, 2, cv2.LINE_AA)
             
-            # Draw text centered in the box without background (since we already drew it)
-            img, _ = cvzone.putTextRect(img, text, [text_x, text_y], 1.6, 1,
-                                      offset=0, border=0,  # No border or offset since we handle it manually
-                                      colorR=normal_color,  # Same as background to blend
-                                      colorT=text_color)
-            
-            # Add neon border effect
-            if is_hover or is_selected:
-                color = select_color if is_selected else hover_color
-                # Draw outer glow
-                cv2.rectangle(img, (x1-2, y1-2), (x2+2, y2+2), color, 2)
-            
-            return img, (x1, y1, x2, y2)  # Return the box coordinates for hover detection
-        
-        # Draw options vertically with neon effect
-        main_img, bbox1 = draw_neon_box(main_img, mcq.choice1, [start_x, start_y])
-        main_img, bbox2 = draw_neon_box(main_img, mcq.choice2, [start_x, start_y + y_gap])
-        main_img, bbox3 = draw_neon_box(main_img, mcq.choice3, [start_x, start_y + y_gap * 2])
-        main_img, bbox4 = draw_neon_box(main_img, mcq.choice4, [start_x, start_y + y_gap * 3])
+            return img, (x1, y1, x2, y2)
+
+        # Draw options with glass effect
+        main_img, bbox1 = draw_glass_box(main_img, mcq.choice1, [start_x, start_y])
+        main_img, bbox2 = draw_glass_box(main_img, mcq.choice2, [start_x, start_y + y_gap])
+        main_img, bbox3 = draw_glass_box(main_img, mcq.choice3, [start_x, start_y + y_gap * 2])
+        main_img, bbox4 = draw_glass_box(main_img, mcq.choice4, [start_x, start_y + y_gap * 3])
 
         if hands:
             cursor = cursor_pos
@@ -188,42 +189,35 @@ while True:
             if mcq.answer == mcq.userAns:
                 score += 1
         score = round((score / qTotal) * 100, 2)
-        main_img, _ = cvzone.putTextRect(main_img, "Quiz Completed", [250, 300], 1, 2, 
-                                       offset=20, border=0,  # Removed border
-                                       colorR=(255, 0, 255),
-                                       colorT=(255, 255, 255))
-        main_img, _ = cvzone.putTextRect(main_img, f'Your Score: {score}%', [700, 300], 1, 2, 
-                                       offset=20, border=0,  # Removed border
-                                       colorR=(255, 0, 255),
-                                       colorT=(255, 255, 255))
+        # Draw completion text without background
+        cv2.putText(main_img, "Quiz Completed", (250, 300), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 200, 255), 2, cv2.LINE_AA)
+        cv2.putText(main_img, f'Your Score: {score}%', (700, 300), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 1.0, (255, 200, 255), 2, cv2.LINE_AA)
 
-    # Draw Progress Bar with neon effect
-    progress_width = 450  # Increased from 300 to 450 (1.5x)
-    progress_height = 22  # Increased from 15 to 22 (1.5x)
-    progress_x = 1280 - progress_width - 100  # Moved further left to prevent overlap
-    progress_y = 720 - progress_height - 30  # Moved slightly higher
+    # Progress bar with glass effect
+    progress_width = 450
+    progress_height = 22
+    progress_x = 1280 - progress_width - 100
+    progress_y = 720 - progress_height - 30
     
-    # Calculate progress
+    # Glass effect for progress bar background
+    mcq.create_glass_effect(main_img, progress_x, progress_y, 
+                           progress_x + progress_width, progress_y + progress_height, alpha=0.3)
+    
+    # Progress fill with glass effect
     barValue = progress_x + (progress_width * qNo // qTotal)
-    
-    # Draw neon progress bar
-    # Outer glow
-    cv2.rectangle(main_img, (progress_x-2, progress_y-2), 
-                 (progress_x + progress_width+2, progress_y + progress_height+2), 
-                 (255, 0, 255), 3)  # Magenta glow
-    
-    # Inner bar
-    cv2.rectangle(main_img, (progress_x, progress_y), 
+    overlay = main_img.copy()
+    cv2.rectangle(overlay, (progress_x, progress_y), 
                  (barValue, progress_y + progress_height), 
-                 (0, 255, 0), cv2.FILLED)  # Neon green fill
+                 (0, 255, 255), cv2.FILLED)
+    cv2.addWeighted(overlay, 0.5, main_img, 0.5, 0, main_img)
     
-    # Progress text with neon effect
+    # Progress text without background
     percentage = f'{round((qNo / qTotal) * 100)}%'
-    main_img, _ = cvzone.putTextRect(main_img, percentage, 
-                                   [progress_x + progress_width + 10, progress_y + progress_height//2], 
-                                   1.2, 1, offset=5,  # Slightly larger text
-                                   colorR=(255, 0, 255),
-                                   colorT=(255, 255, 255))
+    cv2.putText(main_img, percentage, 
+                (progress_x + progress_width + 10, progress_y + progress_height - 5),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 255), 2, cv2.LINE_AA)
 
     # Draw cursor with neon effect
     if cursor_pos is not None:
