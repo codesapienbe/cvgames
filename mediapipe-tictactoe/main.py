@@ -28,6 +28,16 @@ except:
     win_sound = None
     lose_sound = None
 
+# Load background image
+try:
+    background_img = cv2.imread("Resources/Background.png")
+    if background_img is None:
+        print("Warning: Background image not found. Using black background.")
+        background_img = None
+except:
+    print("Warning: Could not load background image. Using black background.")
+    background_img = None
+
 class Button:
 
     def __init__(self, pos, width, height, value):
@@ -80,18 +90,19 @@ class Game:
         self.default_values = [' ' for i in range(9)]
         # Storing the positions occupied by X and O
         self.player_selections = {'X': [], 'O': []}
-
-        # Defining Function to check Victory
+        self.game_over = False
+        self.winner = None
 
     def checkVictory(self, playerpos, curplayer):
-
         # Loop to check whether any winning combination is satisfied or not
         for i in self.solutions:
             if all(j in playerpos[curplayer] for j in i):
                 # Return True if any winning combination is satisfied
                 return True
-                # Return False if no combination is satisfied
         return False
+
+    def checkDraw(self):
+        return len(self.player_selections['X']) + len(self.player_selections['O']) == 9
 
 
 def play_sound(sound):
@@ -108,6 +119,13 @@ def main():
     parser = argparse.ArgumentParser(description='Tic Tac Toe with MediaPipe Hand Tracking')
     parser.add_argument('--camera', type=int, default=0, help='Camera index to use (default: 0)')
     args = parser.parse_args()
+
+    # Set HD resolution
+    GAME_WIDTH = 1280
+    GAME_HEIGHT = 720
+
+    # Initialize game
+    game = Game()
 
     # List available cameras
     available_cameras = []
@@ -152,9 +170,9 @@ def main():
     print(f"Successfully opened camera {args.camera}")
     print(f"Camera properties: {width}x{height} @ {fps}fps")
 
-    cap.set(3, primary_monitor.width)
-    cap.set(4, primary_monitor.height)
-    detector = HandDetector(detectionCon=80, maxHands=1)
+    cap.set(3, GAME_WIDTH)
+    cap.set(4, GAME_HEIGHT)
+    detector = HandDetector(detectionCon=0.75, maxHands=1)
 
     color = (255, 0, 255)
     counter = 0
@@ -170,13 +188,13 @@ def main():
     else:
         next_player = "X"
 
-    # Calculate board size based on screen dimensions
-    board_size = int(min(primary_monitor.width, primary_monitor.height) * 0.8)  # 80% of the smaller screen dimension
+    # Calculate board size based on HD resolution
+    board_size = int(min(GAME_WIDTH, GAME_HEIGHT) * 0.8)  # 80% of the smaller screen dimension
     cell_size = board_size // 3
     
     # Calculate starting position to center the board
-    start_x = int((primary_monitor.width - board_size) // 2)
-    start_y = int((primary_monitor.height - board_size) // 2)
+    start_x = int((GAME_WIDTH - board_size) // 2)
+    start_y = int((GAME_HEIGHT - board_size) // 2)
 
     # creating Button
     button_values = [[" ", " ", " "],
@@ -202,22 +220,29 @@ def main():
 
         img = cv2.flip(img, 1)
 
-        if time.time() - timeStart < totalTime:
-            # Apply strong blur to the background
-            blurred = cv2.GaussianBlur(img, (99, 99), 30)  # High blur values for 90% blur effect
-            img = cv2.addWeighted(img, 0.1, blurred, 0.9, 0)  # 90% blur, 10% original
-
-            # detection hands
-            hands, img = detector.findHands(img, flipType=False)
-
-            # Draw game board background
-            cv2.rectangle(img, 
+        if time.time() - timeStart < totalTime and not game.game_over:
+            # Create game board with background
+            if background_img is not None:
+                # Resize background image to match game dimensions
+                game_board = cv2.resize(background_img, (GAME_WIDTH, GAME_HEIGHT))
+            else:
+                # Fallback to black background if image not available
+                game_board = np.zeros((GAME_HEIGHT, GAME_WIDTH, 3), dtype=np.uint8)
+            
+            # detection hands with improved confidence and drawing
+            hands, img = detector.findHands(img, flipType=False, draw=True)
+            
+            # Draw game board background with semi-transparent overlay
+            overlay = game_board.copy()
+            cv2.rectangle(overlay, 
                          (int(start_x), int(start_y)), 
                          (int(start_x + board_size), int(start_y + board_size)), 
                          (255, 255, 255), 3)
+            # Blend the overlay with the background
+            cv2.addWeighted(overlay, 0.3, game_board, 0.7, 0, game_board)
 
             for button in button_components:
-                button.draw(img)
+                button.draw(game_board)
 
             if hands:
                 if len(hands) == 1:
@@ -225,21 +250,39 @@ def main():
                     distance, _, img = detector.findDistance(landmarks[8][:2], landmarks[12][:2], img)
                     x, y = landmarks[8][:2]
 
+                    # Draw hand tracking on game board
+                    for lm in landmarks:
+                        cv2.circle(game_board, (int(lm[0]), int(lm[1])), 3, (0, 255, 0), cv2.FILLED)
+                    
+                    # Draw distance line
+                    cv2.line(game_board, 
+                            (int(landmarks[8][0]), int(landmarks[8][1])),
+                            (int(landmarks[12][0]), int(landmarks[12][1])),
+                            (255, 255, 255), 2)
+
                     if distance < 65:
                         for button in button_components:
                             if button.focused(x, y) and delay_counter == 0:
                                 if button.value == " " and next_player == "O":
-                                    button.click(img, "X")
+                                    button.click(game_board, "X")
+                                    game.player_selections['X'].append(button_components.index(button) + 1)
+                                    if game.checkVictory(game.player_selections, 'X'):
+                                        game.game_over = True
+                                        game.winner = 'X'
+                                        play_sound(win_sound)
                                     next_player = "X"
                                 elif button.value == " " and next_player == "X":
-                                    button.click(img, "O")
+                                    button.click(game_board, "O")
+                                    game.player_selections['O'].append(button_components.index(button) + 1)
+                                    if game.checkVictory(game.player_selections, 'O'):
+                                        game.game_over = True
+                                        game.winner = 'O'
+                                        play_sound(win_sound)
                                     next_player = "O"
-                                else:
-                                    button.click(img, " ")
                                 delay_counter = 1
 
                 else:
-                    cv2.putText(img, "Game paused.", (primary_monitor.width // 2, primary_monitor.height),
+                    cv2.putText(game_board, "Game paused.", (GAME_WIDTH // 2, GAME_HEIGHT),
                                 cv2.FONT_HERSHEY_PLAIN, 6, (0, 255, 255), 10)
 
                 # avoid duplicates
@@ -258,21 +301,46 @@ def main():
                     score += 1
                     counter = 0
 
-            # Game HUD
-            cvzone.putTextRect(img, f'Time: {int(totalTime - (time.time() - timeStart))}',
-                               (1000, 75), scale=3, offset=20)
-            cvzone.putTextRect(img, f'Score: {str(score).zfill(2)}', (60, 75), scale=3, offset=20)
+            # Game HUD - Make it more visible but smaller
+            cvzone.putTextRect(game_board, f'Time: {int(totalTime - (time.time() - timeStart))}',
+                               (GAME_WIDTH - 300, 50), scale=1.4, offset=10)
+            cvzone.putTextRect(game_board, f'Score: {str(score).zfill(2)}', 
+                               (GAME_WIDTH - 150, 50), scale=1.4, offset=10)
+
+            # Add small camera view in bottom left corner - make it 2x smaller
+            camera_view = img.copy()
+            camera_view = cv2.resize(camera_view, (160, 120))  # 2x smaller than before
+            # Add border around camera view
+            cv2.rectangle(game_board, (10, GAME_HEIGHT - 130),
+                         (170, GAME_HEIGHT - 10), (255, 255, 255), 2)
+            # Place camera view in bottom left corner
+            game_board[GAME_HEIGHT - 130:GAME_HEIGHT - 10,
+                      10:170] = camera_view
+
+            # Show the game board instead of the camera feed
+            cv2.imshow("TicTacToe", game_board)
 
         else:
-            cvzone.putTextRect(img, 'Game Over', (400, 400), scale=5, offset=30, thickness=7)
-            cvzone.putTextRect(img, f'Your Score: {score}', (450, 500), scale=3, offset=20)
-            cvzone.putTextRect(img, 'Press R to restart', (460, 575), scale=2, offset=10)
-
-        cv2.imshow("TicTacToe", img)
+            if game.game_over:
+                if game.winner:
+                    cvzone.putTextRect(game_board, f'Player {game.winner} Wins!', (400, 400), scale=5, offset=30, thickness=7)
+                else:
+                    cvzone.putTextRect(game_board, 'Game Over - Draw!', (400, 400), scale=5, offset=30, thickness=7)
+            else:
+                cvzone.putTextRect(game_board, 'Time\'s Up!', (400, 400), scale=5, offset=30, thickness=7)
+            cvzone.putTextRect(game_board, f'Your Score: {score}', (450, 500), scale=3, offset=20)
+            cvzone.putTextRect(game_board, 'Press R to restart', (460, 575), scale=2, offset=10)
+            cv2.imshow("TicTacToe", game_board)
 
         key = cv2.waitKey(1)
         if (key == ord("c")):  # to clear the display calculator
             equation = ""
+        if key == ord('r'):  # to restart the game
+            game = Game()
+            timeStart = time.time()
+            score = 0
+            for button in button_components:
+                button.click(game_board, " ")
         if key == ord('q'):  # to stop the program
             cap.release()
             cv2.destroyAllWindows()
