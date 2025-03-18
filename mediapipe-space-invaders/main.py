@@ -46,7 +46,9 @@ class Bullet:
         self.y -= self.speed
 
     def draw(self, img):
-        cv2.circle(img, (int(self.x), int(self.y)), 3, (0, 255, 255), -1)
+        # Make bullets more visible with a larger size and brighter color
+        cv2.circle(img, (int(self.x), int(self.y)), 5, (0, 0, 255), -1)  # Red color
+        cv2.circle(img, (int(self.x), int(self.y)), 3, (255, 255, 255), -1)  # White center
 
 class Alien:
     def __init__(self, x, y):
@@ -57,15 +59,27 @@ class Alien:
         self.speed = 2
         self.direction = 1
         self.active = True
+        # Random color for each alien
+        self.color = (
+            random.randint(0, 255),  # B
+            random.randint(0, 255),  # G
+            random.randint(0, 255)   # R
+        )
 
     def move(self):
         self.x += self.speed * self.direction
 
     def draw(self, img):
+        # Draw alien with its unique color
         cv2.rectangle(img, 
                      (int(self.x - self.width//2), int(self.y - self.height//2)),
                      (int(self.x + self.width//2), int(self.y + self.height//2)),
-                     (0, 255, 0), -1)
+                     self.color, -1)
+        # Add a border to make it more visible
+        cv2.rectangle(img, 
+                     (int(self.x - self.width//2), int(self.y - self.height//2)),
+                     (int(self.x + self.width//2), int(self.y + self.height//2)),
+                     (255, 255, 255), 2)  # White border
 
 class SpaceInvadersGame:
     def __init__(self, width=1280, height=720):
@@ -142,11 +156,16 @@ class SpaceInvadersGame:
         self.level = self.score // 500 + 1
 
     def draw(self, img):
-        # Draw player
-        cv2.rectangle(img,
-                     (int(self.player_x - self.player_width//2), int(self.player_y - self.player_height//2)),
-                     (int(self.player_x + self.player_width//2), int(self.player_y + self.player_height//2)),
-                     (255, 0, 0), -1)
+        # Draw player as a triangle
+        player_points = np.array([
+            [int(self.player_x), int(self.player_y - self.player_height//2)],  # Top point
+            [int(self.player_x - self.player_width//2), int(self.player_y + self.player_height//2)],  # Bottom left
+            [int(self.player_x + self.player_width//2), int(self.player_y + self.player_height//2)]   # Bottom right
+        ], np.int32)
+        player_points = player_points.reshape((-1, 1, 2))
+        cv2.fillPoly(img, [player_points], (0, 0, 255))  # Red color
+        # Add a white border to make it more visible
+        cv2.polylines(img, [player_points], True, (255, 255, 255), 2)
 
         # Draw bullets
         for bullet in self.bullets:
