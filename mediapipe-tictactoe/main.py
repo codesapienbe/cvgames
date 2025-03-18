@@ -154,7 +154,7 @@ def main():
 
     cap.set(3, primary_monitor.width)
     cap.set(4, primary_monitor.height)
-    detector = HandDetector(detectionCon=0.8, maxHands=1)
+    detector = HandDetector(detectionCon=80, maxHands=1)
 
     color = (255, 0, 255)
     counter = 0

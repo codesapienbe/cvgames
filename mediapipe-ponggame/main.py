@@ -2,20 +2,50 @@ import cv2
 import cvzone
 from cvzone.HandTrackingModule import HandDetector
 import numpy as np
+import argparse
 
-cap = cv2.VideoCapture(0)
+# Set up argument parser
+parser = argparse.ArgumentParser(description='Pong Game with Hand Tracking')
+parser.add_argument('--camera', type=int, default=0, help='Camera index to use (default: 0)')
+args = parser.parse_args()
+
+# Initialize camera with selected index
+cap = cv2.VideoCapture(args.camera)
+if not cap.isOpened():
+    print(f"Error: Could not open camera with index {args.camera}")
+    exit(-1)
+
 cap.set(3, 1280)
 cap.set(4, 720)
 
 # Importing all images
 imgBackground = cv2.imread("Resources/Background.png")
+if imgBackground is None:
+    print("Error: Could not load Background.png")
+    exit(-1)
+
 imgGameOver = cv2.imread("Resources/gameOver.png")
+if imgGameOver is None:
+    print("Error: Could not load gameOver.png")
+    exit(-1)
+
 imgBall = cv2.imread("Resources/Ball.png", cv2.IMREAD_UNCHANGED)
+if imgBall is None:
+    print("Error: Could not load Ball.png")
+    exit(-1)
+
 imgBat1 = cv2.imread("Resources/bat1.png", cv2.IMREAD_UNCHANGED)
+if imgBat1 is None:
+    print("Error: Could not load bat1.png")
+    exit(-1)
+
 imgBat2 = cv2.imread("Resources/bat2.png", cv2.IMREAD_UNCHANGED)
+if imgBat2 is None:
+    print("Error: Could not load bat2.png")
+    exit(-1)
 
 # Hand Detector
-detector = HandDetector(detectionCon=0.80, maxHands=2)
+detector = HandDetector(detectionCon=1, maxHands=2)
 
 # Variables
 ballPos = [100, 100]
@@ -32,6 +62,10 @@ while True:
 
     # Find the hand and its landmarks
     hands, img = detector.findHands(img, flipType=False)  # with draw
+
+    # Ensure both images have the same dimensions
+    img = cv2.resize(img, (1280, 720))
+    imgBackground = cv2.resize(imgBackground, (1280, 720))
 
     # Overlaying the background image
     img = cv2.addWeighted(img, 0.2, imgBackground, 0.8, 0)
