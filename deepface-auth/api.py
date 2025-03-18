@@ -1,20 +1,15 @@
-import asyncio
 import logging
 import os
-from datetime import datetime
-import shutil
-import zipfile
 from fastapi import FastAPI, File, UploadFile, Query
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import tempfile
-import uvicorn
-from media import analyze_face, capture_face_frames, detect_faces, has_face, verify_face
 from pgdb import init_database, process_image, search_target_image, process_images_from_dir
 from dotenv import load_dotenv
 from filex import get_local_dirs
-from mqtt_client import MQTTClient
+from mqttc import MQTTClient
+import logging
 
 load_dotenv()
 
