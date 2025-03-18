@@ -1,0 +1,32 @@
+wheel
+setuptools
+opencv-python
+deepface
+numpy<2
+matplotlib
+docker
+faiss-cpu
+scikit-learn
+tensorflow-macos==2.15.0; platform_system == "Darwin"
+tensorflow==2.15.0; platform_system != "Darwin"
+keras
+torch>=1.9.0
+torchvision>=0.10.0
+dlib
+pandas
+tf-keras
+networkx
+python-dotenv
+argparse
+networkx
+matplotlib
+fastapi>=0.68.0
+uvicorn>=0.15.0
+python-multipart>=0.0.5
+pillow
+ffmpeg-python==0.2.0
+requests
+celery
+psycopg2-binary>=2.9.3
+pgvector>=0.1.8
+redis
