@@ -27,7 +27,7 @@ logging.basicConfig(
     ]
 )
 
-base_model = "Facenet512"
+base_model = "ArcFace"
 base_detector = "retinaface"
 
 # Database connection parameters
@@ -62,7 +62,7 @@ async def init_database(drop_table=False):
             event_code VARCHAR(255),
             image_path TEXT,
             face_path TEXT,
-            embedding vector(2622),
+            embedding vector(2622),  # ArcFace produces 2622-dimensional embeddings
             checksum VARCHAR(255),
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
@@ -79,8 +79,13 @@ async def extract_face_embeddings(img_path):
             img_path=img_path,
             model_name=base_model,
             detector_backend=base_detector,
-            enforce_detection=False
+            enforce_detection=False,
+            align=True,  # Enable alignment for better accuracy
+            normalization="base"  # Use base normalization for ArcFace
         )
+        if not embedding:
+            logging.error("No embedding was extracted")
+            return None
         return embedding[0]['embedding']
     except Exception as e:
         logging.error(f"Error extracting embeddings: {str(e)}")
@@ -90,7 +95,11 @@ async def capture_face_by_coordinates(img_path, coordinates):
     """Capture face from image using coordinates"""
     try:
         img = cv2.imread(img_path)
-        x, y, w, h = coordinates
+        # Handle both dictionary and tuple formats
+        if isinstance(coordinates, dict):
+            x, y, w, h = coordinates['x'], coordinates['y'], coordinates['w'], coordinates['h']
+        else:
+            x, y, w, h = coordinates
         face = img[y:y+h, x:x+w]
         return face
     except Exception as e:
