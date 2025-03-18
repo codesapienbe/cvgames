@@ -119,7 +119,7 @@ while True:
         question_y = 100
         # Draw question with neon effect
         main_img, bbox = cvzone.putTextRect(main_img, mcq.question, [question_x, question_y], 1.6, 1, 
-                                          offset=15, border=3,
+                                          offset=15, border=0,  # Removed border
                                           colorR=(255, 0, 255),  # Magenta background
                                           colorT=(255, 255, 255))  # White text
         
@@ -189,19 +189,19 @@ while True:
                 score += 1
         score = round((score / qTotal) * 100, 2)
         main_img, _ = cvzone.putTextRect(main_img, "Quiz Completed", [250, 300], 1, 2, 
-                                       offset=20, border=5,
+                                       offset=20, border=0,  # Removed border
                                        colorR=(255, 0, 255),
                                        colorT=(255, 255, 255))
         main_img, _ = cvzone.putTextRect(main_img, f'Your Score: {score}%', [700, 300], 1, 2, 
-                                       offset=20, border=5,
+                                       offset=20, border=0,  # Removed border
                                        colorR=(255, 0, 255),
                                        colorT=(255, 255, 255))
 
     # Draw Progress Bar with neon effect
-    progress_width = 300
-    progress_height = 15
-    progress_x = 1280 - progress_width - 20
-    progress_y = 720 - progress_height - 20
+    progress_width = 450  # Increased from 300 to 450 (1.5x)
+    progress_height = 22  # Increased from 15 to 22 (1.5x)
+    progress_x = 1280 - progress_width - 100  # Moved further left to prevent overlap
+    progress_y = 720 - progress_height - 30  # Moved slightly higher
     
     # Calculate progress
     barValue = progress_x + (progress_width * qNo // qTotal)
@@ -220,8 +220,8 @@ while True:
     # Progress text with neon effect
     percentage = f'{round((qNo / qTotal) * 100)}%'
     main_img, _ = cvzone.putTextRect(main_img, percentage, 
-                                   [progress_x + progress_width + 10, progress_y + progress_height - 5], 
-                                   1, 1, offset=5,
+                                   [progress_x + progress_width + 10, progress_y + progress_height//2], 
+                                   1.2, 1, offset=5,  # Slightly larger text
                                    colorR=(255, 0, 255),
                                    colorT=(255, 255, 255))
 
