@@ -21,12 +21,14 @@ This application allows you to draw website layouts using hand gestures and see 
 ## Installation
 
 1. Create a virtual environment (recommended):
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
 2. Install the required packages:
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -34,6 +36,7 @@ pip install -r requirements.txt
 ## Usage
 
 1. Run the application:
+
 ```bash
 python main.py
 ```
@@ -57,4 +60,4 @@ The application uses MediaPipe to track your hand movements and converts them in
 
 - Make sure you have good lighting for accurate hand tracking
 - Keep your hand within the camera frame
-- The drawing area is limited to the camera view (640x480 pixels) 
+- The drawing area is limited to the camera view (640x480 pixels)
