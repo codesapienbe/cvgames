@@ -5,6 +5,7 @@ import sys
 import argparse
 from cvzone.HandTrackingModule import HandDetector
 import cvzone
+import os
 
 class WebElement:
     def __init__(self, element_type, x, y, width, height):
@@ -44,6 +45,15 @@ class WebsiteDesigner:
         self.selected_element = None
         self.dragging = False
         self.drag_start_pos = None
+        
+        # Load and resize background image
+        bg_path = os.path.join(os.path.dirname(__file__), "Resources", "Background.png")
+        self.background = cv2.imread(bg_path)
+        if self.background is None:
+            self.background = np.zeros((height, width, 3), dtype=np.uint8)
+            print("Warning: Could not load background image. Using black background.")
+        else:
+            self.background = cv2.resize(self.background, (width, height))
         
         # Component palette dimensions
         self.palette_height = 150
@@ -104,16 +114,30 @@ class WebsiteDesigner:
                              scale=0.7, thickness=2, offset=10)
 
     def draw(self, img):
+        # Start with a fresh copy of the background
+        frame = self.background.copy()
+        
         # Draw existing elements
         for element in self.elements:
-            element.draw(img)
+            element.draw(frame)
         
         # Draw palette
-        self.draw_palette(img)
+        self.draw_palette(frame)
         
         # Draw selected element if dragging
         if self.dragging and self.selected_element:
-            self.selected_element.draw(img)
+            self.selected_element.draw(frame)
+            
+        # Copy only the hand points from the camera frame
+        # Create a mask for the hand points
+        mask = np.zeros_like(img)
+        cv2.circle(mask, (self.last_thumb_pos[0], self.last_thumb_pos[1]), 5, (0, 255, 0), -1)  # Green for thumb
+        cv2.circle(mask, (self.last_index_pos[0], self.last_index_pos[1]), 5, (255, 0, 0), -1)  # Blue for index
+        
+        # Combine the background with the hand points
+        frame = cv2.addWeighted(frame, 1.0, mask, 1.0, 0)
+        
+        return frame
 
     def get_component_at_position(self, x, y):
         self.hovered_component = None
@@ -142,6 +166,10 @@ def main():
 
     # Initialize designer
     designer = WebsiteDesigner(GAME_WIDTH, GAME_HEIGHT)
+    
+    # Add last position tracking to designer
+    designer.last_thumb_pos = (0, 0)
+    designer.last_index_pos = (0, 0)
 
     # List available cameras
     available_cameras = []
@@ -188,7 +216,7 @@ def main():
         frame = cv2.resize(frame, (GAME_WIDTH, GAME_HEIGHT))
 
         # Find hands
-        hands, frame = detector.findHands(frame, draw=False)
+        hands, _ = detector.findHands(frame, draw=False)
 
         if hands:
             hand = hands[0]  # Get the first hand detected
@@ -201,12 +229,15 @@ def main():
             thumb_tip = hand['lmList'][4]  # Thumb tip
             index_tip = hand['lmList'][8]  # Index finger tip
             
+            # Update last positions
+            designer.last_thumb_pos = (thumb_tip[0], thumb_tip[1])
+            designer.last_index_pos = (index_tip[0], index_tip[1])
+            
             # Calculate distance between thumb and index finger
             distance = np.sqrt((thumb_tip[0] - index_tip[0])**2 + (thumb_tip[1] - index_tip[1])**2)
             
-            # Draw points
-            cv2.circle(frame, (thumb_tip[0], thumb_tip[1]), 5, (0, 255, 0), -1)  # Green for thumb
-            cv2.circle(frame, (index_tip[0], index_tip[1]), 5, (255, 0, 0), -1)  # Blue for index
+            # Always check for hover effect with thumb position
+            designer.get_component_at_position(thumb_tip[0], thumb_tip[1])
             
             # Check for pinch gesture (thumb and index finger close together)
             if distance < 30:  # Adjust this threshold as needed
@@ -224,30 +255,40 @@ def main():
                             50    # Default height
                         )
                         designer.drag_start_pos = (thumb_tip[0], thumb_tip[1])
+                elif designer.selected_element:  # Continue dragging
+                    # Update selected element position
+                    dx = thumb_tip[0] - designer.drag_start_pos[0]
+                    dy = thumb_tip[1] - designer.drag_start_pos[1]
+                    designer.selected_element.x += dx
+                    designer.selected_element.y += dy
+                    designer.drag_start_pos = (thumb_tip[0], thumb_tip[1])
             else:
                 if designer.dragging:
                     if designer.selected_element:
-                        # Update selected element position
-                        dx = thumb_tip[0] - designer.drag_start_pos[0]
-                        dy = thumb_tip[1] - designer.drag_start_pos[1]
-                        designer.selected_element.x += dx
-                        designer.selected_element.y += dy
-                        designer.drag_start_pos = (thumb_tip[0], thumb_tip[1])
-                        
-                        # Add the element if it's in the design area
-                        if designer.selected_element.y < designer.palette_y:
-                            designer.elements.append(designer.selected_element)
-                    
-                    # Stop dragging
-                    designer.dragging = False
-                    designer.selected_element = None
-                    designer.drag_start_pos = None
+                        # Only release if all fingers are open
+                        all_fingers_open = all(fingers)
+                        if all_fingers_open:
+                            # Add the element if it's in the design area
+                            if designer.selected_element.y < designer.palette_y:
+                                designer.elements.append(designer.selected_element)
+                            
+                            # Stop dragging
+                            designer.dragging = False
+                            designer.selected_element = None
+                            designer.drag_start_pos = None
+                        else:
+                            # Continue dragging if not all fingers are open
+                            dx = thumb_tip[0] - designer.drag_start_pos[0]
+                            dy = thumb_tip[1] - designer.drag_start_pos[1]
+                            designer.selected_element.x += dx
+                            designer.selected_element.y += dy
+                            designer.drag_start_pos = (thumb_tip[0], thumb_tip[1])
 
-        # Draw the designer interface
-        designer.draw(frame)
+        # Draw the designer interface with background
+        display_frame = designer.draw(frame)
 
         # Display the frame
-        cv2.imshow("Website Designer", frame)
+        cv2.imshow("Website Designer", display_frame)
 
         # Break the loop if 'q' is pressed
         if cv2.waitKey(1) & 0xFF == ord('q'):
