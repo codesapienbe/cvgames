@@ -35,6 +35,7 @@ dependencies = [
     "pyautogui",
     "pyperclip",
     "pytesseract",
+    "screeninfo"
 ]
 
 [project.scripts]
