@@ -1,74 +1,86 @@
 import cv2
 import mediapipe as mp
-import numpy as np
+import time
+import datetime
 
-mp_drawing = mp.solutions.drawing_utils
-mp_selfie_segmentation = mp.solutions.selfie_segmentation
+# Initialize MediaPipe Face Mesh for smile detection
+mp_face = mp.solutions.face_mesh
+face_mesh = mp_face.FaceMesh(min_detection_confidence=0.7, min_tracking_confidence=0.5)
 
-# For static images:
-IMAGE_FILES = []
-BG_COLOR = (192, 192, 192) # gray
-MASK_COLOR = (255, 255, 255) # white
-with mp_selfie_segmentation.SelfieSegmentation(
-    model_selection=0) as selfie_segmentation:
-  for idx, file in enumerate(IMAGE_FILES):
-    image = cv2.imread(file)
-    image_height, image_width, _ = image.shape
-    # Convert the BGR image to RGB before processing.
-    results = selfie_segmentation.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
-
-    # Draw selfie segmentation on the background image.
-    # To improve segmentation around boundaries, consider applying a joint
-    # bilateral filter to "results.segmentation_mask" with "image".
-    condition = np.stack((results.segmentation_mask,) * 3, axis=-1) > 0.1
-    # Generate solid color images for showing the output selfie segmentation mask.
-    fg_image = np.zeros(image.shape, dtype=np.uint8)
-    fg_image[:] = MASK_COLOR
-    bg_image = np.zeros(image.shape, dtype=np.uint8)
-    bg_image[:] = BG_COLOR
-    output_image = np.where(condition, fg_image, bg_image)
-    cv2.imwrite('/tmp/selfie_segmentation_output' + str(idx) + '.png', output_image)
-
-# For webcam input:
-BG_COLOR = (192, 192, 192) # gray
+# Start video capture
 cap = cv2.VideoCapture(0)
-with mp_selfie_segmentation.SelfieSegmentation(
-    model_selection=1) as selfie_segmentation:
-  bg_image = None
-  while cap.isOpened():
-    success, image = cap.read()
-    if not success:
-      print("Ignoring empty camera frame.")
-      # If loading a video, use 'break' instead of 'continue'.
-      continue
+if not cap.isOpened():
+    print("Error: Could not open webcam.")
+    exit(1)
 
-    # Flip the image horizontally for a later selfie-view display, and convert
-    # the BGR image to RGB.
-    image = cv2.cvtColor(cv2.flip(image, 1), cv2.COLOR_BGR2RGB)
-    # To improve performance, optionally mark the image as not writeable to
-    # pass by reference.
-    image.flags.writeable = False
-    results = selfie_segmentation.process(image)
+# Smile detection threshold parameters
+SMILE_RATIO_THRESHOLD = 1.5  # mouth width to height ratio
+COOLDOWN = 5  # seconds after capture before next
 
-    image.flags.writeable = True
-    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+# State variables
+countdown_start = None
+captured = False
+last_capture_time = 0
 
-    # Draw selfie segmentation on the background image.
-    # To improve segmentation around boundaries, consider applying a joint
-    # bilateral filter to "results.segmentation_mask" with "image".
-    condition = np.stack(
-      (results.segmentation_mask,) * 3, axis=-1) > 0.1
-    # The background can be customized.
-    #   a) Load an image (with the same width and height of the input image) to
-    #      be the background, e.g., bg_image = cv2.imread('/path/to/image/file')
-    #   b) Blur the input image by applying image filtering, e.g.,
-    #      bg_image = cv2.GaussianBlur(image,(55,55),0)
-    if bg_image is None:
-      bg_image = np.zeros(image.shape, dtype=np.uint8)
-      bg_image[:] = BG_COLOR
-    output_image = np.where(condition, image, bg_image)
+# Main loop runs on import
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    frame = cv2.flip(frame, 1)
+    h, w = frame.shape[:2]
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = face_mesh.process(rgb)
 
-    cv2.imshow('MediaPipe Selfie Segmentation', output_image)
-    if cv2.waitKey(5) & 0xFF == 27:
-      break
+    smile_detected = False
+    if results.multi_face_landmarks:
+        mesh = results.multi_face_landmarks[0]
+        # mouth landmarks
+        left = mesh.landmark[61]
+        right = mesh.landmark[291]
+        top = mesh.landmark[13]
+        bottom = mesh.landmark[14]
+        mouth_w = (right.x - left.x) * w
+        mouth_h = (bottom.y - top.y) * h
+        if mouth_h > 0 and (mouth_w / mouth_h) > SMILE_RATIO_THRESHOLD:
+            smile_detected = True
+
+    now = time.time()
+    # Trigger countdown on smile if not in cooldown or countdown
+    if smile_detected and not countdown_start and now - last_capture_time > COOLDOWN:
+        countdown_start = now
+
+    # Countdown handling
+    if countdown_start:
+        elapsed = now - countdown_start
+        if elapsed < 3:
+            # show countdown number
+            n = 3 - int(elapsed)
+            cv2.putText(frame, str(n), (w//2, h//2), cv2.FONT_HERSHEY_SIMPLEX, 5, (0,255,0), 10)
+        else:
+            # capture selfie
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"selfie_{timestamp}.png"
+            cv2.imwrite(filename, frame)
+            last_capture_time = now
+            countdown_start = None
+            captured = True
+
+    # Show captured message briefly
+    if captured:
+        if now - last_capture_time < 2:
+            cv2.putText(frame, f"Saved {filename}", (10, h - 60), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+        else:
+            captured = False
+
+    # UI
+    cv2.putText(frame, "Smile to start selfie!", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (200,200,200), 2)
+    cv2.putText(frame, "Press 'q' to quit", (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200,200,200), 1)
+
+    cv2.imshow("Selfie Fun", frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Cleanup
 cap.release()
+cv2.destroyAllWindows()
