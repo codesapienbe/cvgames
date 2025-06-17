@@ -1,9 +1,0 @@
-# Start Generation Here
-mediapipe>=0.10.0
-opencv-python>=4.8.0
-numpy>=1.24.0
-deepface>=0.0.79
-tensorflow>=2.13.0
-tf-keras
-cvzone==1.5.0
-# End Generation Here

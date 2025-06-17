@@ -1,6 +1,0 @@
-# Start Generation Here
-opencv-python
-mediapipe
-numpy
-pycaw
-# End Generation Here

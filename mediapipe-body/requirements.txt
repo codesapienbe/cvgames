@@ -1,5 +1,0 @@
-opencv-python==4.9.0.80
-mediapipe==0.8.9
-mediapipe-silicon==0.1.0; platform_system == "Darwin" and platform_machine == "arm64"
-numpy==1.26.4
-argparse==1.4.0
