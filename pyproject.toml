@@ -27,7 +27,14 @@ dependencies = [
     "argparse",
     "python-dotenv",
     "pyaudio",
-    "pydub"
+    "pydub",
+    "beautifulsoup4",
+    "requests",
+    "pyttsx3",
+    "pywhatkit",
+    "pyautogui",
+    "pyperclip",
+    "pytesseract",
 ]
 
 [project.scripts]

@@ -1,0 +1,139 @@
+name: Build PyInstaller Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  release:
+    types: [published]
+
+# Sets permissions of the GITHUB_TOKEN to allow deployment to GitHub Pages
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install PortAudio dependencies on Linux
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update && sudo apt-get install -y portaudio19-dev
+
+      - name: Install UV CLI and project dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [[ "$(uname)" == "Darwin" ]]; then
+            echo "Skipping vosk installation on macOS"
+            pip install uv
+          else
+            pip install uv vosk==0.3.45
+          fi
+          uv sync
+
+      - name: Install UPX on Linux
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y upx
+
+      - name: Install UPX on macOS
+        if: matrix.os == 'macos-latest'
+        run: brew install upx
+
+      - name: Install build dependencies on macOS
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install portaudio cmake swig pkg-config && brew install upx
+
+      - name: Install UPX on Windows
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: choco install upx --no-progress --yes
+
+      - name: Build with PyInstaller via UV
+        shell: bash
+        run: |
+          uv run pyinstaller \
+            --noconfirm \
+            --windowed \
+            --onefile \
+            --collect-all vosk \
+            src/cvgames/__init__.py \
+            --name cvgames \
+            --strip
+
+      - name: Rename output (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          Write-Host "Listing contents of dist directory:"
+          Get-ChildItem -Path "dist" -Recurse
+          if (Test-Path -Path "dist\cvgames.exe") {
+            Move-Item -Path "dist\cvgames.exe" -Destination "dist\cvgames-windows.exe"
+          } else {
+            Write-Error "File not found: dist\cvgames.exe"
+          }
+
+      - name: Rename output (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mv dist/cvgames dist/cvgames-linux
+
+      - name: Rename output (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          mv dist/cvgames dist/cvgames-macos
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cvgames-${{ matrix.os }}
+          path: dist/cvgames-*
+
+  publish_release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set release tag name
+        id: set_tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "TAG_NAME=${{ github.event.release.tag_name }}" >> $GITHUB_ENV
+          else
+            # Extract version from pyproject.toml and prefix with v
+            VERSION=$(grep '^version = ' pyproject.toml | sed -E 's/version = "([^"]+)"/\1/')
+            echo "TAG_NAME=v${VERSION}" >> $GITHUB_ENV
+          fi
+
+      - name: Download Linux build
+        uses: actions/download-artifact@v4
+        with:
+          name: cvgames-ubuntu-latest
+          path: dist_linux
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: cvgames-windows-latest
+          path: dist_windows
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.TAG_NAME }}
+          files: |
+            dist_linux/cvgames-linux
+            dist_windows/cvgames-windows.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
