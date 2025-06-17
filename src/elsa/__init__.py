@@ -3,12 +3,17 @@ import mediapipe as mp
 import numpy as np
 import random
 import math
+import ctypes
 
 mp_pose = mp.solutions.pose
 mp_hands = mp.solutions.hands
 pose = mp_pose.Pose(min_detection_confidence=0.7, min_tracking_confidence=0.5)
 hands = mp_hands.Hands(max_num_hands=2, min_detection_confidence=0.7)
 mp_drawing = mp.solutions.drawing_utils
+
+user32 = ctypes.windll.user32
+screen_width = user32.GetSystemMetrics(0)
+screen_height = user32.GetSystemMetrics(1)
 
 ice_projectiles = []
 ice_spikes = []
@@ -123,7 +128,7 @@ def update_effects(frame):
             cv2.circle(frame, (int(trail_pos[0]), int(trail_pos[1])), 
                       size, (255, 255, 255), -1)
             cv2.circle(frame, (int(trail_pos[0]), int(trail_pos[1])), 
-                      size + 3, (180, 220, 255), 1)
+                      size + 3, (255, 220, 180), 1)
         
         if proj['life'] <= 0 or proj['pos'][1] > h:
             create_ice_spike_burst(proj['pos'])
@@ -139,7 +144,7 @@ def update_effects(frame):
         end_y = int(spike['start'][1] + progress * (spike['end'][1] - spike['start'][1]))
         
         cv2.line(frame, tuple(map(int, spike['start'])), (end_x, end_y), 
-                (200, 230, 255), spike['thickness'])
+                (255, 230, 200), spike['thickness'])
         cv2.line(frame, tuple(map(int, spike['start'])), (end_x, end_y), 
                 (255, 255, 255), max(1, spike['thickness'] - 2))
         
@@ -151,9 +156,9 @@ def update_effects(frame):
         ground['life'] -= 1
         
         cv2.circle(frame, (int(ground['pos'][0]), int(ground['pos'][1])), 
-                  ground['growth'], (220, 240, 255), -1)
+                  ground['growth'], (255, 240, 220), -1)
         cv2.circle(frame, (int(ground['pos'][0]), int(ground['pos'][1])), 
-                  ground['growth'], (180, 210, 255), 2)
+                  ground['growth'], (255, 210, 180), 2)
         
         if ground['life'] <= 0:
             frozen_ground.remove(ground)
@@ -165,7 +170,7 @@ def update_effects(frame):
         cv2.rectangle(frame, 
                      (int(wall['pos'][0] - 6), int(wall['pos'][1])),
                      (int(wall['pos'][0] + 6), int(wall['pos'][1] - wall['height'])),
-                     (200, 230, 255), -1)
+                     (255, 230, 200), -1)
         cv2.rectangle(frame, 
                      (int(wall['pos'][0] - 6), int(wall['pos'][1])),
                      (int(wall['pos'][0] + 6), int(wall['pos'][1] - wall['height'])),
@@ -183,7 +188,7 @@ def update_effects(frame):
         
         alpha = shield['life'] / 60
         size = int(shield['size'] * alpha)
-        cv2.circle(frame, (int(orbit_x), int(orbit_y)), size, (180, 220, 255), -1)
+        cv2.circle(frame, (int(orbit_x), int(orbit_y)), size, (255, 220, 180), -1)
         cv2.circle(frame, (int(orbit_x), int(orbit_y)), size + 2, (255, 255, 255), 1)
         
         if shield['life'] <= 0:
@@ -227,6 +232,10 @@ def detect_hand_gesture(landmarks):
     return None
 
 cap = cv2.VideoCapture(0)
+# set resolution to match screen and FPS to 30 for end-user
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, screen_width)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, screen_height)
+cap.set(cv2.CAP_PROP_FPS, 30)
 cv2.namedWindow('❄️ Elsa Full Body Magic ❄️', cv2.WINDOW_NORMAL)
 cv2.setWindowProperty('❄️ Elsa Full Body Magic ❄️', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
@@ -242,8 +251,10 @@ while cap.isOpened():
     pose_results = pose.process(rgb)
     hand_results = hands.process(rgb)
     
-    frame[:,:,0] = cv2.add(frame[:,:,0], 25)
-    frame[:,:,1] = cv2.add(frame[:,:,1], 15)
+    # apply cooler tone: boost blue and green, reduce red for icy palette
+    frame[:,:,0] = cv2.add(frame[:,:,0], 50)
+    frame[:,:,1] = cv2.add(frame[:,:,1], 30)
+    frame[:,:,2] = cv2.subtract(frame[:,:,2], 20)
     
     body_points = []
     foot_positions = []
@@ -268,10 +279,6 @@ while cap.isOpened():
             (int(left_shoulder.x * w), int(left_shoulder.y * h)),
             (int(right_shoulder.x * w), int(right_shoulder.y * h))
         ]
-        
-        mp_drawing.draw_landmarks(frame, pose_results.pose_landmarks, mp_pose.POSE_CONNECTIONS,
-                                mp_drawing.DrawingSpec(color=(100, 200, 255), thickness=2),
-                                mp_drawing.DrawingSpec(color=(200, 230, 255), thickness=1))
     
     current_hands = []
     hands_above_head = 0
@@ -306,10 +313,6 @@ while cap.isOpened():
             elif gesture == "blizzard" and body_points:
                 for shoulder in body_points[1:]:
                     create_shoulder_blizzard(shoulder)
-            
-            mp_drawing.draw_landmarks(frame, hand, mp_hands.HAND_CONNECTIONS,
-                                    mp_drawing.DrawingSpec(color=(150, 200, 255), thickness=3),
-                                    mp_drawing.DrawingSpec(color=(200, 230, 255), thickness=2))
     
     if hands_above_head >= 2 and body_points and not shield_active:
         create_body_shield(body_points)
