@@ -1,117 +1,92 @@
 import cv2
 import mediapipe as mp
+import time
+import random
 import numpy as np
-import argparse
-import sys
 
-# Parse command-line arguments
-parser = argparse.ArgumentParser(description='MediaPipe Body Pose Detection')
-parser.add_argument('--camera', type=int, default=0, help='Camera index to use (default: 0)')
-parser.add_argument('--min_detection_confidence', type=float, default=0.5, help='Minimum detection confidence (default: 0.5)')
-args = parser.parse_args()
-
-mp_drawing = mp.solutions.drawing_utils
-mp_drawing_styles = mp.solutions.drawing_styles
+# Initialize MediaPipe Pose
 mp_pose = mp.solutions.pose
+pose = mp_pose.Pose(min_detection_confidence=0.7, min_tracking_confidence=0.5)
+mp_draw = mp.solutions.drawing_utils
 
-# For static images:
-IMAGE_FILES = []
-BG_COLOR = (192, 192, 192)  # gray
-with mp_pose.Pose(
-        static_image_mode=True,
-        model_complexity=2,
-        enable_segmentation=True,
-        min_detection_confidence=0.5) as pose:
-    for idx, file in enumerate(IMAGE_FILES):
-        image = cv2.imread(file)
-        image_height, image_width, _ = image.shape
-        # Convert the BGR image to RGB before processing.
-        results = pose.process(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+# Setup webcam
+cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    print("Error: Could not open webcam.")
+    exit(1)
 
-        if not results.pose_landmarks:
-            continue
-        print(
-            f'Nose coordinates: ('
-            f'{results.pose_landmarks.landmark[mp_pose.PoseLandmark.NOSE].x * image_width}, '
-            f'{results.pose_landmarks.landmark[mp_pose.PoseLandmark.NOSE].y * image_height})'
-        )
+# Screen dimensions
+disp_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+disp_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        annotated_image = image.copy()
-        # Draw segmentation on the image.
-        # To improve segmentation around boundaries, consider applying a joint
-        # bilateral filter to "results.segmentation_mask" with "image".
-        condition = np.stack((results.segmentation_mask,) * 3, axis=-1) > 0.1
-        bg_image = np.zeros(image.shape, dtype=np.uint8)
-        bg_image[:] = BG_COLOR
-        annotated_image = np.where(condition, annotated_image, bg_image)
-        # Draw pose landmarks on the image.
-        mp_drawing.draw_landmarks(
-            annotated_image,
-            results.pose_landmarks,
-            mp_pose.POSE_CONNECTIONS,
-            landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style())
-        cv2.imwrite('/tmp/annotated_image' + str(idx) + '.png', annotated_image)
-        # Plot pose world landmarks.
-        mp_drawing.plot_landmarks(
-            results.pose_world_landmarks, mp_pose.POSE_CONNECTIONS)
+# Game settings
+gap_width = int(disp_w * 0.3)
+bar_height = 20
+speed = 200  # pixels per second
+spawn_interval = 2.0  # seconds
+last_spawn = time.time()
+obstacles = []  # each: {'y', 'gap_x'}
+player_y = int(disp_h * 0.8)
+score = 0
+start_time = time.time()
+prev_time = time.time()
 
-# Try to open the specified camera
-try:
-    cap = cv2.VideoCapture(args.camera)
-    if not cap.isOpened():
-        print(f"Error: Could not open camera {args.camera}")
-        available_cameras = []
-        # Try to find available cameras
-        for i in range(10):  # Try the first 10 camera indices
-            temp_cap = cv2.VideoCapture(i)
-            if temp_cap.isOpened():
-                available_cameras.append(i)
-                temp_cap.release()
-        
-        if available_cameras:
-            print(f"Available cameras: {available_cameras}")
-            print(f"Please run again with: --camera [index]")
-        else:
-            print("No cameras found")
-        sys.exit(1)
-except Exception as e:
-    print(f"Error accessing camera: {e}")
-    sys.exit(1)
+# Main loop runs on import
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    frame = cv2.flip(frame, 1)
+    now = time.time()
+    dt = now - prev_time
+    prev_time = now
 
-print(f"Using camera index: {args.camera}")
-print("Press 'q' or 'ESC' to exit")
+    # Spawn obstacles
+    if now - last_spawn > spawn_interval:
+        gap_x = random.randint(gap_width//2, disp_w - gap_width//2)
+        obstacles.append({'y': -bar_height, 'gap_x': gap_x})
+        last_spawn = now
 
-with mp_pose.Pose(
-        min_detection_confidence=args.min_detection_confidence,
-        min_tracking_confidence=0.5) as pose:
-    while cap.isOpened():
-        success, image = cap.read()
-        if not success:
-            print("Ignoring empty camera frame.")
-            # If loading a video, use 'break' instead of 'continue'.
-            continue
+    # Move obstacles
+    for obs in list(obstacles):
+        obs['y'] += int(speed * dt)
+        # Check pass
+        if obs['y'] > disp_h:
+            obstacles.remove(obs)
+            score += 1
 
-        # To improve performance, optionally mark the image as not writeable to
-        # pass by reference.
-        image.flags.writeable = False
-        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        results = pose.process(image)
+    # Draw obstacles
+    for obs in obstacles:
+        y = obs['y']
+        gx = obs['gap_x']
+        # left bar
+        cv2.rectangle(frame, (0, y), (gx - gap_width//2, y + bar_height), (255, 255, 255), -1)
+        # right bar
+        cv2.rectangle(frame, (gx + gap_width//2, y), (disp_w, y + bar_height), (255, 255, 255), -1)
 
-        # Draw the pose annotation on the image.
-        image.flags.writeable = True
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-        mp_drawing.draw_landmarks(
-            image,
-            results.pose_landmarks,
-            mp_pose.POSE_CONNECTIONS,
-            landmark_drawing_spec=mp_drawing_styles.get_default_pose_landmarks_style())
-        # Flip the image horizontally for a selfie-view display.
-        cv2.imshow('MediaPipe Pose', cv2.flip(image, 1))
-        # Check for exit keys
-        key = cv2.waitKey(5) & 0xFF
-        if key == 27 or key == ord('q'):  # ESC or 'q' key
-            break
+    # Detect player position via hips
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = pose.process(rgb)
+    player_x = disp_w // 2
+    if results.pose_landmarks:
+        lm = results.pose_landmarks.landmark
+        lh = lm[mp_pose.PoseLandmark.LEFT_HIP.value]
+        rh = lm[mp_pose.PoseLandmark.RIGHT_HIP.value]
+        player_x = int(((lh.x + rh.x)/2) * disp_w)
+        # Draw skeleton
+        mp_draw.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
+
+    # Draw player indicator
+    cv2.circle(frame, (player_x, player_y), 10, (0, 255, 0), -1)
+
+    # Display score and time
+    elapsed_time = now - start_time
+    cv2.putText(frame, f"Score: {score}", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    cv2.putText(frame, f"Time: {elapsed_time:.2f}s", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+    cv2.imshow('Body Movement Challenge', frame)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
 
 cap.release()
 cv2.destroyAllWindows()
-print("Application closed")
