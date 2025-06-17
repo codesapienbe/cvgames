@@ -1,0 +1,281 @@
+{
+  "metadata": {
+    "version": "1.0",
+    "last_updated": "2025-06-17",
+    "total_games": 12,
+    "categories": [
+      "Hand Tracking",
+      "Face Detection",
+      "Body Movement",
+      "Eye Tracking",
+      "Gesture Recognition"
+    ]
+  },
+  "games": [
+    {
+      "id": 1,
+      "title": "\ud83c\udfaf Virtual Darts",
+      "description": "Throw virtual darts using hand gestures. Perfect for improving hand-eye coordination!",
+      "category": "Hand Tracking",
+      "age_range": "6+",
+      "difficulty": "Easy",
+      "duration": "5-15 minutes",
+      "download_link": "https://github.com/cvgames/virtual-darts",
+      "demo_video": "https://youtu.be/demo-darts",
+      "requirements": [
+        "OpenCV",
+        "MediaPipe"
+      ],
+      "features": [
+        "Hand tracking",
+        "Score tracking",
+        "Multiplayer support"
+      ],
+      "emoji": "\ud83c\udfaf",
+      "thumbnail": "virtual-darts.png"
+    },
+    {
+      "id": 2,
+      "title": "\ud83e\udea8 Rock Paper Scissors AI",
+      "description": "Play the classic game against an AI opponent using hand gestures!",
+      "category": "Hand Tracking",
+      "age_range": "3+",
+      "difficulty": "Easy",
+      "duration": "2-10 minutes",
+      "download_link": "https://github.com/cvgames/rock-paper-scissors",
+      "demo_video": "https://youtu.be/demo-rps",
+      "requirements": [
+        "OpenCV",
+        "MediaPipe"
+      ],
+      "features": [
+        "Hand gesture recognition",
+        "AI opponent",
+        "Score tracking"
+      ],
+      "emoji": "\ud83e\udea8",
+      "thumbnail": "rock-paper-scissors.png"
+    },
+    {
+      "id": 3,
+      "title": "\ud83c\udfa8 Air Painter",
+      "description": "Draw and paint in the air using finger movements. Express your creativity!",
+      "category": "Hand Tracking",
+      "age_range": "4+",
+      "difficulty": "Easy",
+      "duration": "10-30 minutes",
+      "download_link": "https://github.com/cvgames/air-painter",
+      "demo_video": "https://youtu.be/demo-painter",
+      "requirements": [
+        "OpenCV",
+        "MediaPipe"
+      ],
+      "features": [
+        "Finger tracking",
+        "Color selection",
+        "Save artwork"
+      ],
+      "emoji": "\ud83c\udfa8",
+      "thumbnail": "air-painter.png"
+    },
+    {
+      "id": 4,
+      "title": "\ud83c\udfd3 Virtual Pong",
+      "description": "Control the paddle with hand movements in this classic arcade game!",
+      "category": "Hand Tracking",
+      "age_range": "6+",
+      "difficulty": "Medium",
+      "duration": "5-20 minutes",
+      "download_link": "https://github.com/cvgames/virtual-pong",
+      "demo_video": "https://youtu.be/demo-pong",
+      "requirements": [
+        "OpenCV",
+        "MediaPipe"
+      ],
+      "features": [
+        "Hand tracking",
+        "Difficulty levels",
+        "High scores"
+      ],
+      "emoji": "\ud83c\udfd3",
+      "thumbnail": "virtual-pong.png"
+    },
+    {
+      "id": 5,
+      "title": "\ud83d\udc40 Eye Blink Story",
+      "description": "Progress through an interactive story using eye blinks and expressions!",
+      "category": "Eye Tracking",
+      "age_range": "8+",
+      "difficulty": "Medium",
+      "duration": "15-45 minutes",
+      "download_link": "https://github.com/cvgames/eye-blink-story",
+      "demo_video": "https://youtu.be/demo-story",
+      "requirements": [
+        "OpenCV",
+        "MediaPipe",
+        "dlib"
+      ],
+      "features": [
+        "Eye tracking",
+        "Interactive story",
+        "Multiple endings"
+      ],
+      "emoji": "\ud83d\udc40",
+      "thumbnail": "eye-blink-story.png"
+    },
+    {
+      "id": 6,
+      "title": "\ud83d\udd7a Dance Battle",
+      "description": "Follow dance moves and compete with friends using full body tracking!",
+      "category": "Body Movement",
+      "age_range": "5+",
+      "difficulty": "Hard",
+      "duration": "10-30 minutes",
+      "download_link": "https://github.com/cvgames/dance-battle",
+      "demo_video": "https://youtu.be/demo-dance",
+      "requirements": [
+        "OpenCV",
+        "MediaPipe"
+      ],
+      "features": [
+        "Full body tracking",
+        "Multiple songs",
+        "Score system"
+      ],
+      "emoji": "\ud83d\udd7a",
+      "thumbnail": "dance-battle.png"
+    },
+    {
+      "id": 7,
+      "title": "\ud83c\udfaa Circus Performer",
+      "description": "Balance virtual objects and perform circus tricks using body movements!",
+      "category": "Body Movement",
+      "age_range": "6+",
+      "difficulty": "Medium",
+      "duration": "10-25 minutes",
+      "download_link": "https://github.com/cvgames/circus-performer",
+      "demo_video": "https://youtu.be/demo-circus",
+      "requirements": [
+        "OpenCV",
+        "MediaPipe"
+      ],
+      "features": [
+        "Body tracking",
+        "Physics simulation",
+        "Achievement system"
+      ],
+      "emoji": "\ud83c\udfaa",
+      "thumbnail": "circus-performer.png"
+    },
+    {
+      "id": 8,
+      "title": "\ud83d\ude0a Emotion Mirror",
+      "description": "Mirror different emotions and expressions in this fun face-tracking game!",
+      "category": "Face Detection",
+      "age_range": "3+",
+      "difficulty": "Easy",
+      "duration": "5-15 minutes",
+      "download_link": "https://github.com/cvgames/emotion-mirror",
+      "demo_video": "https://youtu.be/demo-emotion",
+      "requirements": [
+        "OpenCV",
+        "MediaPipe"
+      ],
+      "features": [
+        "Face detection",
+        "Emotion recognition",
+        "Educational content"
+      ],
+      "emoji": "\ud83d\ude0a",
+      "thumbnail": "emotion-mirror.png"
+    },
+    {
+      "id": 9,
+      "title": "\ud83c\udfaf Gesture Commander",
+      "description": "Control a spaceship using hand gestures in this space adventure!",
+      "category": "Gesture Recognition",
+      "age_range": "8+",
+      "difficulty": "Hard",
+      "duration": "15-40 minutes",
+      "download_link": "https://github.com/cvgames/gesture-commander",
+      "demo_video": "https://youtu.be/demo-commander",
+      "requirements": [
+        "OpenCV",
+        "MediaPipe"
+      ],
+      "features": [
+        "Complex gestures",
+        "Story mode",
+        "Leaderboards"
+      ],
+      "emoji": "\ud83c\udfaf",
+      "thumbnail": "gesture-commander.png"
+    },
+    {
+      "id": 10,
+      "title": "\ud83c\udfb5 Sound Conductor",
+      "description": "Conduct an orchestra using hand movements and create beautiful music!",
+      "category": "Gesture Recognition",
+      "age_range": "5+",
+      "difficulty": "Medium",
+      "duration": "10-30 minutes",
+      "download_link": "https://github.com/cvgames/sound-conductor",
+      "demo_video": "https://youtu.be/demo-conductor",
+      "requirements": [
+        "OpenCV",
+        "MediaPipe"
+      ],
+      "features": [
+        "Music creation",
+        "Gesture control",
+        "Record compositions"
+      ],
+      "emoji": "\ud83c\udfb5",
+      "thumbnail": "sound-conductor.png"
+    },
+    {
+      "id": 11,
+      "title": "\ud83d\ude97 Drive Simulator",
+      "description": "Drive a virtual car using steering wheel hand gestures!",
+      "category": "Hand Tracking",
+      "age_range": "8+",
+      "difficulty": "Medium",
+      "duration": "15-45 minutes",
+      "download_link": "https://github.com/cvgames/drive-simulator",
+      "demo_video": "https://youtu.be/demo-drive",
+      "requirements": [
+        "OpenCV",
+        "MediaPipe"
+      ],
+      "features": [
+        "Steering control",
+        "Multiple tracks",
+        "Speed challenges"
+      ],
+      "emoji": "\ud83d\ude97",
+      "thumbnail": "drive-simulator.png"
+    },
+    {
+      "id": 12,
+      "title": "\ud83e\udde9 Puzzle Master",
+      "description": "Solve puzzles using hand gestures to move pieces around!",
+      "category": "Hand Tracking",
+      "age_range": "6+",
+      "difficulty": "Medium",
+      "duration": "10-30 minutes",
+      "download_link": "https://github.com/cvgames/puzzle-master",
+      "demo_video": "https://youtu.be/demo-puzzle",
+      "requirements": [
+        "OpenCV",
+        "MediaPipe"
+      ],
+      "features": [
+        "Drag and drop",
+        "Multiple difficulty levels",
+        "Timer challenges"
+      ],
+      "emoji": "\ud83e\udde9",
+      "thumbnail": "puzzle-master.png"
+    }
+  ]
+}
