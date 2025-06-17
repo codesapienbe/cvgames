@@ -2,6 +2,7 @@ import cv2
 import mediapipe as mp
 import random
 import time
+import tkinter as tk
 
 def classify_gesture(hand_landmarks):
     """Classify hand gesture as rock, paper, or scissors based on extended fingers."""
@@ -26,7 +27,17 @@ def main():
     hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.5)
     mp_draw = mp.solutions.drawing_utils
 
+    # Get screen resolution and set capture properties
+    root = tk.Tk()
+    root.withdraw()
+    screen_width = root.winfo_screenwidth()
+    screen_height = root.winfo_screenheight()
+    root.destroy()
+
     cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, screen_width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, screen_height)
+    cap.set(cv2.CAP_PROP_FPS, 30)
     if not cap.isOpened():
         print("Error: Could not open webcam.")
         return
@@ -39,6 +50,15 @@ def main():
     result_text = ""
     gesture_time = 0
     choices = ["rock", "paper", "scissors"]
+
+    # Scoreboard variables
+    wins = 0
+    losses = 0
+    draws = 0
+    games_played = 0
+    streak = 0  # positive for win streak, negative for loss streak
+    max_win_streak = 0
+    max_loss_streak = 0
 
     while True:
         ret, frame = cap.read()
@@ -64,6 +84,29 @@ def main():
                 result_text = f"You win! {gesture} beats {ai_choice}"
             else:
                 result_text = f"You lose! {ai_choice} beats {gesture}"
+
+            # Update scoreboard
+            games_played += 1
+            if result_text.startswith("Draw!"):
+                draws += 1
+                streak = 0
+            elif result_text.startswith("You win!"):
+                wins += 1
+                if streak >= 0:
+                    streak += 1
+                else:
+                    streak = 1
+                if streak > max_win_streak:
+                    max_win_streak = streak
+            else:
+                losses += 1
+                if streak <= 0:
+                    streak -= 1
+                else:
+                    streak = -1
+                if abs(streak) > max_loss_streak:
+                    max_loss_streak = abs(streak)
+
             prev_gesture = gesture
             cooldown = True
             gesture_time = time.time()
@@ -77,6 +120,18 @@ def main():
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
         cv2.putText(frame, f"{result_text or ''}", (10, 70),
                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+
+        # Display scoreboard and stats
+        cv2.putText(frame, f"Wins: {wins}  Losses: {losses}  Draws: {draws}", (10, 110),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        win_rate = int(wins / games_played * 100) if games_played > 0 else 0
+        cv2.putText(frame, f"Games: {games_played}  Win Rate: {win_rate}%", (10, 150),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        streak_color = (0, 255, 0) if streak > 0 else (0, 0, 255) if streak < 0 else (255, 255, 255)
+        cv2.putText(frame, f"Streak: {streak}", (10, 190),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, streak_color, 2)
+        cv2.putText(frame, f"Max Win Streak: {max_win_streak}  Max Loss Streak: {max_loss_streak}", (10, 230),
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 165, 0), 2)
 
         cv2.imshow("Rock Paper Scissors AI", frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
