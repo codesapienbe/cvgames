@@ -3,6 +3,9 @@ import mediapipe as mp
 import time
 import numpy as np
 import random
+import os
+import glob
+import math
 
 # Initialize MediaPipe Hands
 mp_hands = mp.solutions.hands
@@ -47,6 +50,35 @@ score = 0
 level = 1
 score_threshold = 5
 
+# Load resources directory and helper
+resources_path = os.path.join(os.path.dirname(__file__), 'Resources')
+wheel_img = None
+obs_imgs = []
+player_img = None
+def overlay_img_alpha(bg, fg, pos):
+    x, y = pos
+    h, w = fg.shape[:2]
+    if fg.shape[2] == 4:
+        alpha = fg[:, :, 3] / 255.0
+        for c in range(3):
+            bg[y:y+h, x:x+w, c] = fg[:, :, c] * alpha + bg[y:y+h, x:x+w, c] * (1 - alpha)
+    else:
+        bg[y:y+h, x:x+w] = fg
+
+# Load steering wheel sprite
+wheel_path = os.path.join(resources_path, 'steering_wheel.png')
+if os.path.exists(wheel_path):
+    wheel_img = cv2.imread(wheel_path, cv2.IMREAD_UNCHANGED)
+# Load obstacle car sprites
+for p in glob.glob(os.path.join(resources_path, 'obs_car*.png')):
+    img = cv2.imread(p, cv2.IMREAD_UNCHANGED)
+    if img is not None:
+        obs_imgs.append(img)
+# Load player car sprite
+player_path = os.path.join(resources_path, 'player_car.png')
+if os.path.exists(player_path):
+    player_img = cv2.imread(player_path, cv2.IMREAD_UNCHANGED)
+
 # Main loop runs on import
 while True:
     ret, cam_frame = cap.read()
@@ -77,17 +109,29 @@ while True:
         lane_width = (right - left) / 3.0
         lane_idx = random.randint(0, 2)
         obs_x = left + (lane_idx + 0.5) * lane_width
-        obstacles.append({'x': obs_x, 'y': -car_height, 'speed': road_speed})
+        obs = {'x': obs_x, 'y': -car_height, 'speed': road_speed}
+        if obs_imgs:
+            img = random.choice(obs_imgs)
+            h_img, w_img = img.shape[:2]
+            obs['img'] = img
+            obs['w_img'] = w_img
+            obs['h_img'] = h_img
+        obstacles.append(obs)
         last_spawn = current_time
 
     # Update and draw obstacles
     for obs in list(obstacles):
         obs['y'] += obs['speed'] * dt
-        ox1 = int(obs['x'] - car_width/2)
-        oy1 = int(obs['y'] - car_height/2)
-        ox2 = int(obs['x'] + car_width/2)
-        oy2 = int(obs['y'] + car_height/2)
-        cv2.rectangle(display, (ox1, oy1), (ox2, oy2), (0, 0, 255), -1)  # red obstacles
+        if 'img' in obs:
+            ox = int(obs['x'] - obs['w_img']/2)
+            oy = int(obs['y'] - obs['h_img']/2)
+            overlay_img_alpha(display, obs['img'], (ox, oy))
+        else:
+            ox1 = int(obs['x'] - car_width/2)
+            oy1 = int(obs['y'] - car_height/2)
+            ox2 = int(obs['x'] + car_width/2)
+            oy2 = int(obs['y'] + car_height/2)
+            cv2.rectangle(display, (ox1, oy1), (ox2, oy2), (0, 0, 255), -1)
         # Collision detection
         if abs(car_x - obs['x']) < car_width and abs(car_y - obs['y']) < car_height:
             # Game Over menu: retry or quit
@@ -179,7 +223,47 @@ while True:
     y1 = int(car_y - car_height / 2)
     x2 = int(car_x + car_width / 2)
     y2 = int(car_y + car_height / 2)
-    cv2.rectangle(display, (x1, y1), (x2, y2), (0, 102, 204), -1)  # blue player car
+    if player_img is not None:
+        p_img = cv2.resize(player_img, (car_width, car_height))
+        overlay_img_alpha(display, p_img, (x1, y1))
+    else:
+        cv2.rectangle(display, (x1, y1), (x2, y2), (0, 102, 204), -1)  # blue player car
+
+    # Overlay steering wheel and hand positions (small, transparent, top-left)
+    wheel_sz = width // 6
+    ux, uy = 20, 20
+    if wheel_img is not None:
+        wheel = cv2.resize(wheel_img, (wheel_sz, wheel_sz), interpolation=cv2.INTER_AREA)
+        # apply global transparency
+        if wheel.shape[2] == 4:
+            tmp = wheel.copy()
+            alpha = (tmp[:, :, 3].astype(float) * 0.3).astype('uint8')
+            tmp[:, :, 3] = alpha
+            overlay_img_alpha(display, tmp, (ux, uy))
+        else:
+            roi = display[uy:uy+wheel_sz, ux:ux+wheel_sz].copy()
+            resized = cv2.resize(wheel, (wheel_sz, wheel_sz), interpolation=cv2.INTER_AREA)
+            roi[:] = resized
+            display[uy:uy+wheel_sz, ux:ux+wheel_sz] = cv2.addWeighted(roi, 0.3, display[uy:uy+wheel_sz, ux:ux+wheel_sz], 0.7, 0)
+    else:
+        # fallback: transparent wheel with spokes
+        roi = display[uy:uy+wheel_sz, ux:ux+wheel_sz].copy()
+        center = (wheel_sz//2, wheel_sz//2)
+        radius = wheel_sz//2 - 5
+        cv2.circle(roi, center, radius, (200,200,200), 3)
+        for i in range(8):
+            angle = i * (2 * math.pi / 8)
+            x2 = center[0] + int(math.cos(angle) * radius)
+            y2 = center[1] + int(math.sin(angle) * radius)
+            cv2.line(roi, center, (x2, y2), (200,200,200), 2)
+        display[uy:uy+wheel_sz, ux:ux+wheel_sz] = cv2.addWeighted(roi, 0.3, display[uy:uy+wheel_sz, ux:ux+wheel_sz], 0.7, 0)
+    # draw hand positions on wheel area
+    if results and results.multi_hand_landmarks:
+        for hl in results.multi_hand_landmarks:
+            wpt = hl.landmark[0]
+            hx = ux + int(wpt.x * wheel_sz)
+            hy = uy + int(wpt.y * wheel_sz)
+            cv2.circle(display, (hx, hy), 8, (0,255,0), -1)
 
     # Overlay webcam preview
     # Webcam preview
