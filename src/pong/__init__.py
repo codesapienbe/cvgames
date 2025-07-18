@@ -4,6 +4,10 @@ from cvzone.HandTrackingModule import HandDetector
 import numpy as np
 import argparse
 
+# Import the back button system
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'cvstore'))
+from back_button import BackButton
+
 def main():
     # Set up argument parser
     parser = argparse.ArgumentParser(description='Pong Game with Hand Tracking')
@@ -17,6 +21,9 @@ def main():
         exit(-1)
 
     cap.set(3, 1280)
+
+    # Initialize back button
+    back_button = BackButton(screen_width, screen_height)
     cap.set(4, 720)
 
     # Importing all images
@@ -62,6 +69,26 @@ def main():
 
         # Find the hand and its landmarks
         hands, img = detector.findHands(img, flipType=False)  # with draw
+
+        # Handle back button input
+        hand_position = None
+        hand_landmarks = None
+        if hands:
+            hand_position = hands[0]["lmList"][9][:2]  # Palm center
+            # Convert to MediaPipe landmarks format for back button
+            hand_landmarks = type('HandLandmarks', (), {
+                'landmark': [type('Landmark', (), {
+                    'x': lm[0] / screen_width,
+                    'y': lm[1] / screen_height
+                })() for lm in hands[0]["lmList"]]
+            })()
+
+        # Check if user wants to exit
+        if back_button.handle_input(key, hand_landmarks, hand_position):
+            print("User approved exit - returning to app store")
+            cap.release()
+            cv2.destroyAllWindows()
+            return
 
         # Ensure both images have the same dimensions
         img = cv2.resize(img, (1280, 720))
@@ -118,6 +145,9 @@ def main():
 
         img[580:700, 20:233] = cv2.resize(imgRaw, (213, 120))
 
+
+        # Draw back button
+        back_button.draw(frame, hand_position)
         cv2.imshow("Image", img)
         key = cv2.waitKey(1)
         if key == ord('r'):

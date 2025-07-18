@@ -14,6 +14,10 @@ import os
 import sys
 import argparse
 
+# Import the back button system
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'cvstore'))
+from back_button import BackButton
+
 # Initialize pygame mixer
 pygame.mixer.init()
 
@@ -171,6 +175,9 @@ def main():
     print(f"Camera properties: {width}x{height} @ {fps}fps")
 
     cap.set(3, GAME_WIDTH)
+
+    # Initialize back button
+    back_button = BackButton(screen_width, screen_height)
     cap.set(4, GAME_HEIGHT)
     detector = HandDetector(detectionCon=0.75, maxHands=1)
 
@@ -231,6 +238,26 @@ def main():
             
             # detection hands with improved confidence and drawing
             hands, img = detector.findHands(img, flipType=False, draw=True)
+
+        # Handle back button input
+        hand_position = None
+        hand_landmarks = None
+        if hands:
+            hand_position = hands[0]["lmList"][9][:2]  # Palm center
+            # Convert to MediaPipe landmarks format for back button
+            hand_landmarks = type('HandLandmarks', (), {
+                'landmark': [type('Landmark', (), {
+                    'x': lm[0] / screen_width,
+                    'y': lm[1] / screen_height
+                })() for lm in hands[0]["lmList"]]
+            })()
+
+        # Check if user wants to exit
+        if back_button.handle_input(key, hand_landmarks, hand_position):
+            print("User approved exit - returning to app store")
+            cap.release()
+            cv2.destroyAllWindows()
+            return
             
             # Draw game board background with semi-transparent overlay
             overlay = game_board.copy()
@@ -318,6 +345,9 @@ def main():
                       10:170] = camera_view
 
             # Show the game board instead of the camera feed
+
+        # Draw back button
+        back_button.draw(frame, hand_position)
             cv2.imshow("TicTacToe", game_board)
 
         else:

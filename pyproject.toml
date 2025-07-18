@@ -40,4 +40,4 @@ dependencies = [
 
 [project.scripts]
 csvstore = "csvstore:main"
-
+appstore = "appstore:main"

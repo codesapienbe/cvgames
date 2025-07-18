@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- Background circle -->
+  <circle cx="50" cy="50" r="45" fill="#4A90E2" stroke="#2C5AA0" stroke-width="2"/>
+  
+  <!-- App store building -->
+  <rect x="25" y="35" width="50" height="30" fill="#FFFFFF" stroke="#333333" stroke-width="1"/>
+  
+  <!-- Store windows -->
+  <rect x="30" y="40" width="8" height="8" fill="#FFD700"/>
+  <rect x="42" y="40" width="8" height="8" fill="#FF6B6B"/>
+  <rect x="54" y="40" width="8" height="8" fill="#4ECDC4"/>
+  <rect x="66" y="40" width="8" height="8" fill="#45B7D1"/>
+  
+  <!-- Store door -->
+  <rect x="45" y="55" width="10" height="10" fill="#8B4513"/>
+  
+  <!-- Hand gesture symbol -->
+  <g transform="translate(50, 20)">
+    <!-- Palm -->
+    <ellipse cx="0" cy="0" rx="8" ry="6" fill="#FFB6C1" stroke="#FF69B4" stroke-width="1"/>
+    
+    <!-- Fingers -->
+    <ellipse cx="-6" cy="-8" rx="2" ry="4" fill="#FFB6C1" stroke="#FF69B4" stroke-width="1"/>
+    <ellipse cx="-2" cy="-10" rx="2" ry="5" fill="#FFB6C1" stroke="#FF69B4" stroke-width="1"/>
+    <ellipse cx="2" cy="-10" rx="2" ry="5" fill="#FFB6C1" stroke="#FF69B4" stroke-width="1"/>
+    <ellipse cx="6" cy="-8" rx="2" ry="4" fill="#FFB6C1" stroke="#FF69B4" stroke-width="1"/>
+  </g>
+  
+  <!-- Game controller symbol -->
+  <g transform="translate(20, 75)">
+    <!-- Controller body -->
+    <rect x="-8" y="-3" width="16" height="6" rx="3" fill="#333333"/>
+    
+    <!-- Buttons -->
+    <circle cx="-4" cy="0" r="1.5" fill="#FF0000"/>
+    <circle cx="0" cy="0" r="1.5" fill="#00FF00"/>
+    <circle cx="4" cy="0" r="1.5" fill="#0000FF"/>
+  </g>
+  
+  <!-- Text label -->
+  <text x="50" y="95" text-anchor="middle" font-family="Arial, sans-serif" font-size="8" fill="#333333" font-weight="bold">APP STORE</text>
+</svg> 

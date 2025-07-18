@@ -13,6 +13,10 @@ import os
 import sys
 import argparse
 
+# Import the back button system
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'cvstore'))
+from back_button import BackButton
+
 # Initialize pygame mixer
 pygame.mixer.init()
 
@@ -208,6 +212,9 @@ def main():
     cap.set(3, GAME_WIDTH)
     cap.set(4, GAME_HEIGHT)
     detector = HandDetector(detectionCon=0.75, maxHands=1)
+    
+    # Initialize back button
+    back_button = BackButton(GAME_WIDTH, GAME_HEIGHT)
 
     # Calculate board size and position
     board_width = int(GAME_WIDTH * 0.4)  # 40% of screen width
@@ -274,6 +281,26 @@ def main():
             hands, img = detector.findHands(img, flipType=False, draw=True)
             
             current_time = time.time()
+            
+            # Handle back button input
+            hand_position = None
+            hand_landmarks = None
+            if hands:
+                hand_position = hands[0]["lmList"][9][:2]  # Palm center
+                # Convert to MediaPipe landmarks format for back button
+                hand_landmarks = type('HandLandmarks', (), {
+                    'landmark': [type('Landmark', (), {
+                        'x': lm[0] / GAME_WIDTH,
+                        'y': lm[1] / GAME_HEIGHT
+                    })() for lm in hands[0]["lmList"]]
+                })()
+            
+            # Check if user wants to exit
+            if back_button.handle_input(key, hand_landmarks, hand_position):
+                print("User approved exit - returning to app store")
+                cap.release()
+                cv2.destroyAllWindows()
+                return
 
             if hands:
                 if len(hands) == 1:
@@ -335,6 +362,9 @@ def main():
                          (170, GAME_HEIGHT - 10), (255, 255, 255), 2)
             game_board[GAME_HEIGHT - 130:GAME_HEIGHT - 10,
                       10:170] = camera_view
+            
+            # Draw back button
+            back_button.draw(game_board, hand_position)
 
             cv2.imshow("Tetris", game_board)
 
@@ -343,6 +373,10 @@ def main():
             cvzone.putTextRect(game_board, 'Game Over!', (400, 400), scale=5, offset=30, thickness=7)
             cvzone.putTextRect(game_board, f'Final Score: {game.score}', (450, 500), scale=3, offset=20)
             cvzone.putTextRect(game_board, 'Press R to restart', (460, 575), scale=2, offset=10)
+            
+            # Draw back button on game over screen too
+            back_button.draw(game_board, hand_position)
+            
             cv2.imshow("Tetris", game_board)
 
         key = cv2.waitKey(1)
