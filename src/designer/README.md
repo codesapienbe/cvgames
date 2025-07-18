@@ -1,63 +1,53 @@
-# Website Designer with Hand Tracking
+# 🎨 Website Designer
 
-This application allows you to draw website layouts using hand gestures and see the HTML/CSS preview in real-time.
+Draw website layouts using hand gestures and see the HTML/CSS preview in real-time.
 
-## Features
+## Category
+Utility
 
-- Hand tracking using MediaPipe
-- Draw lines using hand gestures (pinch to start/stop drawing)
-- Real-time HTML/CSS preview using PyQt5's WebEngine
-- Clear drawing functionality
-- Split view with camera feed and preview
+## Age Range
+All ages
+
+## Difficulty
+Medium
+
+## Duration
+10-30 min
 
 ## Requirements
-
 - Python 3.8 or higher
 - OpenCV
 - MediaPipe
 - PyQt5
 - PyQtWebEngine
 
-## Installation
+## Features
+- Hand tracking using MediaPipe
+- Draw lines using hand gestures (pinch to start/stop drawing)
+- Real-time HTML/CSS preview using PyQt5's WebEngine
+- Clear drawing functionality
+- Split view with camera feed and preview
 
-1. Create a virtual environment (recommended):
-
-```bash
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-
-2. Install the required packages:
-
-```bash
-pip install -r requirements.txt
-```
-
-## Usage
-
-1. Run the application:
-
-```bash
-python main.py
-```
-
-2. Use hand gestures to draw:
+## How to Play
+1. Run:
+   ```bash
+   python main.py
+   ```
+2. Play:
    - Pinch your thumb and index finger together to start drawing
    - Move your hand to draw lines
    - Release the pinch to stop drawing
    - Use the "Clear Drawing" button to reset the canvas
-
-3. The right side of the window shows:
-   - Generated HTML code
-   - Generated CSS code
-   - Live preview of your drawing
-
-## How it Works
-
-The application uses MediaPipe to track your hand movements and converts them into SVG paths. These paths are then rendered in real-time using HTML and CSS. The preview is updated continuously as you draw.
+   - The right side of the window shows:
+     - Generated HTML code
+     - Generated CSS code
+     - Live preview of your drawing
+3. Quit: Close the application window.
 
 ## Notes
-
 - Make sure you have good lighting for accurate hand tracking
 - Keep your hand within the camera frame
 - The drawing area is limited to the camera view (640x480 pixels)
+
+---
+This game is part of the CVGames collection. For more games and details, visit the main project documentation.
