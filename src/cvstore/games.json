@@ -32,7 +32,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Swipe detection", "Score system", "Multiplayer"]
+            "features": ["Swipe detection", "Score system", "Multiplayer"],
+            "route": "fruitninja"
         },
         {
             "id": 2,
@@ -43,7 +44,8 @@
             "difficulty": "Easy",
             "duration": "5-15 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Gesture recognition", "AI opponent", "Score tracking"]
+            "features": ["Gesture recognition", "AI opponent", "Score tracking"],
+            "route": "rockpaperscissors"
         },
         {
             "id": 3,
@@ -54,7 +56,8 @@
             "difficulty": "Easy",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Finger tracking", "Color selection", "Save artwork"]
+            "features": ["Finger tracking", "Color selection", "Save artwork"],
+            "route": "airpainter"
         },
         {
             "id": 4,
@@ -65,7 +68,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Drag and drop", "Multiple levels", "Timer"]
+            "features": ["Drag and drop", "Multiple levels", "Timer"],
+            "route": "puzzlemaster"
         },
         {
             "id": 5,
@@ -76,7 +80,8 @@
             "difficulty": "Easy",
             "duration": "5-15 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Tap detection", "Score tracking", "Speed levels"]
+            "features": ["Tap detection", "Score tracking", "Speed levels"],
+            "route": "whackamole"
         },
         {
             "id": 6,
@@ -87,7 +92,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Finger movements", "Virtual keyboard", "Score tracking"]
+            "features": ["Finger movements", "Virtual keyboard", "Score tracking"],
+            "route": "virtualkeyboard"
         },
         {
             "id": 7,
@@ -98,7 +104,8 @@
             "difficulty": "Medium",
             "duration": "10-20 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Block placement", "Physics simulation", "Multiplayer"]
+            "features": ["Block placement", "Physics simulation", "Multiplayer"],
+            "route": "stackblocks"
         },
         {
             "id": 8,
@@ -109,7 +116,8 @@
             "difficulty": "Easy",
             "duration": "5-15 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Hand tracking", "Score system", "Speed increase"]
+            "features": ["Hand tracking", "Score system", "Speed increase"],
+            "route": "eggcatcher"
         },
         {
             "id": 9,
@@ -120,7 +128,8 @@
             "difficulty": "Hard",
             "duration": "15-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Pattern recognition", "Spell effects", "Story mode"]
+            "features": ["Pattern recognition", "Spell effects", "Story mode"],
+            "route": "magicspellscasting"
         },
         {
             "id": 10,
@@ -131,7 +140,8 @@
             "difficulty": "Medium",
             "duration": "10-20 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Sequence memory", "Multiplayer", "Score tracking"]
+            "features": ["Sequence memory", "Multiplayer", "Score tracking"],
+            "route": "simonsays"
         },
         {
             "id": 11,
@@ -142,7 +152,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Swipe detection", "Score system", "Undo option"]
+            "features": ["Swipe detection", "Score system", "Undo option"],
+            "route": "2048withswipes"
         },
         {
             "id": 12,
@@ -153,7 +164,8 @@
             "difficulty": "Medium",
             "duration": "10-20 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Hand tracking", "Difficulty levels", "High scores"]
+            "features": ["Hand tracking", "Difficulty levels", "High scores"],
+            "route": "virtualpong"
         },
         {
             "id": 13,
@@ -164,7 +176,8 @@
             "difficulty": "Medium",
             "duration": "10-25 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Maze navigation", "Timer", "Multiple levels"]
+            "features": ["Maze navigation", "Timer", "Multiple levels"],
+            "route": "fingermaze"
         },
         {
             "id": 14,
@@ -175,7 +188,8 @@
             "difficulty": "Medium",
             "duration": "15-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Multiplayer", "Gesture input", "Save artwork"]
+            "features": ["Multiplayer", "Gesture input", "Save artwork"],
+            "route": "gesturedrawing"
         },
         {
             "id": 15,
@@ -186,7 +200,8 @@
             "difficulty": "Hard",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Pose tracking", "Multiple songs", "Score system"]
+            "features": ["Pose tracking", "Multiple songs", "Score system"],
+            "route": "dancebattle"
         },
         {
             "id": 16,
@@ -197,7 +212,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Exercise form", "Workout guides", "Real-time feedback"]
+            "features": ["Exercise form", "Workout guides", "Real-time feedback"],
+            "route": "fitnesstrainer"
         },
         {
             "id": 17,
@@ -208,7 +224,8 @@
             "difficulty": "Medium",
             "duration": "15-45 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Pose detection", "Pose correction", "Workout plans"]
+            "features": ["Pose detection", "Pose correction", "Workout plans"],
+            "route": "virtualyogacoach"
         },
         {
             "id": 18,
@@ -219,7 +236,8 @@
             "difficulty": "Medium",
             "duration": "10-25 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Body tracking", "Physics simulation", "Achievement system"]
+            "features": ["Body tracking", "Physics simulation", "Achievement system"],
+            "route": "circusperformer"
         },
         {
             "id": 19,
@@ -230,7 +248,8 @@
             "difficulty": "Medium",
             "duration": "10-20 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Balance tracking", "Timer", "Score system"]
+            "features": ["Balance tracking", "Timer", "Score system"],
+            "route": "balanceboard"
         },
         {
             "id": 20,
@@ -241,7 +260,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Punch detection", "Dodge mechanics", "Score tracking"]
+            "features": ["Punch detection", "Dodge mechanics", "Score tracking"],
+            "route": "boxingtrainer"
         },
         {
             "id": 21,
@@ -252,7 +272,8 @@
             "difficulty": "Medium",
             "duration": "10-25 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Jump detection", "Timer", "Calorie counter"]
+            "features": ["Jump detection", "Timer", "Calorie counter"],
+            "route": "jumpropesimulator"
         },
         {
             "id": 22,
@@ -263,7 +284,8 @@
             "difficulty": "Hard",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Pose tracking", "Obstacle course", "Score tracking"]
+            "features": ["Pose tracking", "Obstacle course", "Score tracking"],
+            "route": "skidownhill"
         },
         {
             "id": 23,
@@ -274,7 +296,8 @@
             "difficulty": "Medium",
             "duration": "10-20 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Lateral movement", "Obstacle avoidance", "Score system"]
+            "features": ["Lateral movement", "Obstacle avoidance", "Score system"],
+            "route": "runneradventure"
         },
         {
             "id": 24,
@@ -285,7 +308,8 @@
             "difficulty": "Medium",
             "duration": "15-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Kick detection", "Dribble tracking", "Skill challenges"]
+            "features": ["Kick detection", "Dribble tracking", "Skill challenges"],
+            "route": "soccertrainer"
         },
         {
             "id": 25,
@@ -296,7 +320,8 @@
             "difficulty": "Medium",
             "duration": "10-25 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Aiming system", "Target practice", "Score tracking"]
+            "features": ["Aiming system", "Target practice", "Score tracking"],
+            "route": "archerysimulator"
         },
         {
             "id": 26,
@@ -307,7 +332,8 @@
             "difficulty": "Medium",
             "duration": "15-45 min",
             "requirements": ["OpenCV", "MediaPipe", "dlib"],
-            "features": ["Eye tracking", "Interactive story", "Multiple endings"]
+            "features": ["Eye tracking", "Interactive story", "Multiple endings"],
+            "route": "eyeblinkstory"
         },
         {
             "id": 27,
@@ -318,7 +344,8 @@
             "difficulty": "Hard",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Blink detection", "Target shooting", "Score system"]
+            "features": ["Blink detection", "Target shooting", "Score system"],
+            "route": "eyeshooter"
         },
         {
             "id": 28,
@@ -329,7 +356,8 @@
             "difficulty": "Easy",
             "duration": "5-15 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Face detection", "Emotion recognition", "Educational content"]
+            "features": ["Face detection", "Emotion recognition", "Educational content"],
+            "route": "emotionmirror"
         },
         {
             "id": 29,
@@ -340,7 +368,8 @@
             "difficulty": "Easy",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Smile detection", "Countdown timer", "Photo effects"]
+            "features": ["Smile detection", "Countdown timer", "Photo effects"],
+            "route": "selfiefun"
         },
         {
             "id": 30,
@@ -351,7 +380,8 @@
             "difficulty": "Easy",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Smile detection", "Mini-games", "Score tracking"]
+            "features": ["Smile detection", "Mini-games", "Score tracking"],
+            "route": "smiledetector"
         },
         {
             "id": 31,
@@ -362,7 +392,8 @@
             "difficulty": "Easy",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Face filters", "Photo effects", "Video effects"]
+            "features": ["Face filters", "Photo effects", "Video effects"],
+            "route": "facefilterfun"
         },
         {
             "id": 32,
@@ -373,7 +404,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Landmark tracking", "Puzzle solver", "Timer"]
+            "features": ["Landmark tracking", "Puzzle solver", "Timer"],
+            "route": "facepuzzle"
         },
         {
             "id": 33,
@@ -384,7 +416,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Hand position", "Music creation", "Record compositions"]
+            "features": ["Hand position", "Music creation", "Record compositions"],
+            "route": "armusicalinstrument"
         },
         {
             "id": 34,
@@ -395,7 +428,8 @@
             "difficulty": "Easy",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Math problems", "Number gestures", "Score tracking"]
+            "features": ["Math problems", "Number gestures", "Score tracking"],
+            "route": "virtualcalculator"
         },
         {
             "id": 35,
@@ -406,7 +440,8 @@
             "difficulty": "Medium",
             "duration": "15-45 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Gesture recognition", "Language learning", "Progress tracking"]
+            "features": ["Gesture recognition", "Language learning", "Progress tracking"],
+            "route": "languagetutor"
         },
         {
             "id": 36,
@@ -417,7 +452,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Letter gestures", "Word challenges", "Score system"]
+            "features": ["Letter gestures", "Word challenges", "Score system"],
+            "route": "spellingbee"
         },
         {
             "id": 37,
@@ -428,7 +464,8 @@
             "difficulty": "Hard",
             "duration": "20-45 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Gesture input", "Experiment simulation", "Educational content"]
+            "features": ["Gesture input", "Experiment simulation", "Educational content"],
+            "route": "chemistrylab"
         },
         {
             "id": 38,
@@ -439,7 +476,8 @@
             "difficulty": "Hard",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Hand gestures", "Platformer", "Score tracking"]
+            "features": ["Hand gestures", "Platformer", "Score tracking"],
+            "route": "mariomaster"
         },
         {
             "id": 39,
@@ -450,7 +488,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Body movements", "Snake game", "Score tracking"]
+            "features": ["Body movements", "Snake game", "Score tracking"],
+            "route": "gesturesnake"
         },
         {
             "id": 40,
@@ -461,7 +500,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Hand gestures", "Tetris game", "Score tracking"]
+            "features": ["Hand gestures", "Tetris game", "Score tracking"],
+            "route": "tetristwist"
         },
         {
             "id": 41,
@@ -472,7 +512,8 @@
             "difficulty": "Easy",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Eye tracking", "Tic Tac Toe", "Score tracking"]
+            "features": ["Eye tracking", "Tic Tac Toe", "Score tracking"],
+            "route": "eyetictactoe"
         },
         {
             "id": 42,
@@ -483,7 +524,8 @@
             "difficulty": "Easy",
             "duration": "10-20 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Head tracking", "Memory game", "Timer"]
+            "features": ["Head tracking", "Memory game", "Timer"],
+            "route": "memorymatch"
         },
         {
             "id": 43,
@@ -494,7 +536,8 @@
             "difficulty": "Hard",
             "duration": "15-40 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Complex gestures", "Adventure mode", "Leaderboards"]
+            "features": ["Complex gestures", "Adventure mode", "Leaderboards"],
+            "route": "gesturecommander"
         },
         {
             "id": 44,
@@ -505,7 +548,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Music creation", "Gesture control", "Record compositions"]
+            "features": ["Music creation", "Gesture control", "Record compositions"],
+            "route": "soundconductor"
         },
         {
             "id": 45,
@@ -516,7 +560,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Gesture input", "Traffic simulation", "Score system"]
+            "features": ["Gesture input", "Traffic simulation", "Score system"],
+            "route": "trafficcop"
         },
         {
             "id": 46,
@@ -527,7 +572,8 @@
             "difficulty": "Medium",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Gesture input", "Trivia questions", "Score tracking"]
+            "features": ["Gesture input", "Trivia questions", "Score tracking"],
+            "route": "gesturequiz"
         },
         {
             "id": 47,
@@ -538,7 +584,8 @@
             "difficulty": "Easy",
             "duration": "10-30 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Pet interaction", "Gesture input", "Emotion feedback"]
+            "features": ["Pet interaction", "Gesture input", "Emotion feedback"],
+            "route": "petsimulator"
         },
         {
             "id": 48,
@@ -549,7 +596,8 @@
             "difficulty": "Medium",
             "duration": "15-45 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Multiplayer", "Gesture input", "Score system"]
+            "features": ["Multiplayer", "Gesture input", "Score system"],
+            "route": "teamcharades"
         },
         {
             "id": 50,
@@ -560,7 +608,20 @@
             "difficulty": "Hard",
             "duration": "15-45 min",
             "requirements": ["OpenCV", "MediaPipe"],
-            "features": ["Body silhouette", "Multiplayer", "Virtual environment"]
+            "features": ["Body silhouette", "Multiplayer", "Virtual environment"],
+            "route": "hideandseek"
+        },
+        {
+            "id": 51,
+            "title": "Duck Hunt",
+            "description": "Shoot ducks with hand gestures. Users hand must be like a gun. Duck will move in a random direction. ",
+            "category": "Classic Games",
+            "age_range": "5+",
+            "difficulty": "Medium",
+            "duration": "10-30 min",
+            "requirements": ["OpenCV", "MediaPipe"],
+            "features": ["Hand gestures", "Duck hunting", "Score tracking"],
+            "route": "duckhunt"
         }
     ]
 }

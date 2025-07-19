@@ -1,18 +1,11 @@
 import cv2
 import mediapipe as mp
-import sys
-import os
-import random
-import string
-import tempfile
-import shutil
 import json
 import threading
-import queue
 import subprocess
 import time
-import numpy as np
 import platform
+import os
 from pathlib import Path
 from typing import List, Tuple
 from enum import Enum
@@ -32,6 +25,21 @@ class AppState(Enum):
     PAUSED = "PAUSED"                 # Interaction is paused
     ERROR = "ERROR"                   # Error state
     SHUTTING_DOWN = "SHUTTING_DOWN"   # App is shutting down
+
+def detect_screen_resolution():
+    """Detect the primary screen resolution"""
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()  # Hide the window
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        root.destroy()
+        return screen_width, screen_height
+    except Exception as e:
+        print(f"⚠️ Could not detect screen resolution: {e}")
+        print("🖥️ Using default resolution: 1920x1080")
+        return 1920, 1080
 
 def check_dependencies():
     """Check if required dependencies are installed"""
@@ -215,9 +223,33 @@ class AppStore:
         self.mp_drawing = mp.solutions.drawing_utils
         
         # Screen setup
-        self.screen_width = 1920
-        self.screen_height = 1080
-        self.cap = cv2.VideoCapture(0)
+        self.screen_width, self.screen_height = detect_screen_resolution()
+        print(f"🖥️ Detected screen resolution: {self.screen_width}x{self.screen_height}")
+        
+        # Initialize camera with fallback
+        self.cap = None
+        for camera_index in range(3):  # Try cameras 0, 1, 2
+            print(f"📹 Trying camera index {camera_index}...")
+            self.cap = cv2.VideoCapture(camera_index)
+            if self.cap.isOpened():
+                # Test if we can actually read frames
+                ret, frame = self.cap.read()
+                if ret:
+                    print(f"✅ Camera {camera_index} working")
+                    break
+                else:
+                    print(f"❌ Camera {camera_index} opened but can't read frames")
+                    self.cap.release()
+                    self.cap = None
+            else:
+                print(f"❌ Camera {camera_index} failed to open")
+        
+        if not self.cap or not self.cap.isOpened():
+            print("❌ No working camera found")
+            print("💡 Try running: python camera_test.py")
+            raise RuntimeError("No working camera found")
+        
+        # Set camera properties
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.screen_width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.screen_height)
         self.cap.set(cv2.CAP_PROP_FPS, 30)
@@ -239,6 +271,15 @@ class AppStore:
         self.last_hand_position = (0, 0)
         self.hand_velocity = (0, 0)
         self.smooth_hand_position = (0, 0)
+        
+        # Soft cursor state
+        self.cursor_position = (0, 0)
+        self.cursor_visible = False
+        self.cursor_size = 20
+        self.cursor_alpha = 0.8
+        self.cursor_smooth_factor = 0.3
+        self.cursor_interactive = False
+        self.cursor_hover_target = None
         
         # Navigation and gesture state
         self.hand_positions = []
@@ -317,15 +358,55 @@ class AppStore:
         # Load demo games
         self.load_demo_games()
         
-        # Create the main window
+        # Create the main window in full screen
         cv2.namedWindow('CVGames App Store', cv2.WINDOW_NORMAL)
+        cv2.setWindowProperty('CVGames App Store', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+        
+        # Set window size to full screen dimensions
         cv2.resizeWindow('CVGames App Store', self.screen_width, self.screen_height)
+        
+        # Move window to top-left corner to ensure full screen
+        cv2.moveWindow('CVGames App Store', 0, 0)
+        
+        print("🖥️ App store window set to full screen mode")
         
         # Transition to IDLE when ready
         self.set_state(AppState.IDLE, "App store ready")
     
     def load_demo_games(self):
-        """Load demo games for demonstration"""
+        """Load games from games.json file"""
+        try:
+            # Try to load from games.json file
+            games_json_path = Path(__file__).parent.parent / "cvstore" / "games.json"
+            if games_json_path.exists():
+                with open(games_json_path, 'r', encoding='utf-8') as f:
+                    games_data = json.load(f)
+                
+                for game_data in games_data['games']:
+                    # Use the route field from games.json
+                    module_name = game_data.get('route', game_data['title'].lower().replace(' ', '').replace('-', '').replace('_', ''))
+                    
+                    game_card = GameCard(
+                        name=game_data['title'],
+                        description=game_data['description'],
+                        rules=f"Category: {game_data['category']}, Age: {game_data['age_range']}, Difficulty: {game_data['difficulty']}",
+                        icon_path='',  # Will be implemented later
+                        module_path=module_name
+                    )
+                    self.games.append(game_card)
+                
+                print(f"✅ Loaded {len(self.games)} games from games.json")
+            else:
+                print(f"⚠️ games.json not found at {games_json_path}, loading fallback games")
+                self._load_fallback_games()
+                
+        except Exception as e:
+            print(f"❌ Error loading games from games.json: {e}")
+            print("⚠️ Loading fallback games")
+            self._load_fallback_games()
+    
+    def _load_fallback_games(self):
+        """Load fallback demo games if games.json is not available"""
         demo_games = [
             {
                 'name': 'Hand Tracker',
@@ -381,7 +462,7 @@ class AppStore:
             )
             self.games.append(game_card)
         
-        print(f"✅ Loaded {len(self.games)} demo games")
+        print(f"✅ Loaded {len(self.games)} fallback games")
     
     def set_state(self, new_state: AppState, message: str = ""):
         """Thread-safe state change with logging"""
@@ -674,25 +755,76 @@ class AppStore:
         self.selected_game = game
         self.loading_start_time = time.time()
         
-        # Simulate game loading
-        def load_game():
-            time.sleep(self.loading_duration)
-            print(f"✅ Game {game.name} loaded successfully")
-            self.set_state(AppState.GAME_RUNNING, f"{game.name} is running")
+        def run_game():
+            try:
+                # Get the current directory
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                game_dir = os.path.join(current_dir, '..', game.module_path)
+                
+                # Check if game directory exists
+                if not os.path.exists(game_dir):
+                    print(f"❌ Game directory not found: {game_dir}")
+                    self.set_state(AppState.ERROR, f"Game {game.name} not found")
+                    time.sleep(3)
+                    self.set_state(AppState.IDLE, "Ready for interaction")
+                    self.selected_game = None
+                    return
+                
+                # Check if __init__.py exists
+                init_file = os.path.join(game_dir, '__init__.py')
+                if not os.path.exists(init_file):
+                    print(f"❌ Game file not found: {init_file}")
+                    self.set_state(AppState.ERROR, f"Game {game.name} not found")
+                    time.sleep(3)
+                    self.set_state(AppState.IDLE, "Ready for interaction")
+                    self.selected_game = None
+                    return
+                
+                print(f"✅ Game {game.name} loaded successfully")
+                self.set_state(AppState.GAME_RUNNING, f"{game.name} is running")
+                
+                # Launch the game as a subprocess
+                import subprocess
+                import sys
+                
+                # Change to the game directory
+                original_dir = os.getcwd()
+                os.chdir(game_dir)
+                
+                try:
+                    # Launch the game
+                    process = subprocess.Popen([sys.executable, '__init__.py'], 
+                                            stdout=subprocess.PIPE, 
+                                            stderr=subprocess.PIPE)
+                    
+                    # Wait for the game to finish
+                    stdout, stderr = process.communicate()
+                    
+                    if process.returncode != 0:
+                        print(f"⚠️ Game {game.name} exited with code {process.returncode}")
+                        if stderr:
+                            print(f"Error: {stderr.decode()}")
+                    
+                finally:
+                    # Restore original directory
+                    os.chdir(original_dir)
+                
+                print(f"🔄 Game {game.name} finished")
+                self.set_state(AppState.GAME_EXITING, f"Exiting {game.name}")
+                
+                # Brief exit period
+                time.sleep(1)
+                
+            except Exception as e:
+                print(f"❌ Error launching game {game.name}: {e}")
+                self.set_state(AppState.ERROR, f"Error launching {game.name}")
+                time.sleep(3)
             
-            # Simulate game running for 5 seconds
-            time.sleep(5)
-            
-            print(f"🔄 Game {game.name} finished")
-            self.set_state(AppState.GAME_EXITING, f"Exiting {game.name}")
-            
-            # Simulate exit period
-            time.sleep(3)
-            
-            self.set_state(AppState.IDLE, "Ready for interaction")
-            self.selected_game = None
+            finally:
+                self.set_state(AppState.IDLE, "Ready for interaction")
+                self.selected_game = None
         
-        self.game_thread = threading.Thread(target=load_game, daemon=True)
+        self.game_thread = threading.Thread(target=run_game, daemon=True)
         self.game_thread.start()
     
     def update_frame(self, frame):
@@ -731,6 +863,9 @@ class AppStore:
         
         # Draw page indicator
         self.draw_page_indicator(frame)
+        
+        # Draw soft cursor
+        self.draw_soft_cursor(frame)
     
     def draw_games(self, frame):
         """Draw game cards"""
@@ -826,6 +961,74 @@ class AppStore:
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                    self.colors['text_secondary'], 1, cv2.LINE_AA)
     
+    def draw_soft_cursor(self, frame):
+        """Draw a soft, animated cursor at hand position"""
+        if not self.cursor_visible:
+            return
+        
+        x, y = self.cursor_position
+        size = self.cursor_size
+        
+        # Determine cursor color based on interaction state
+        if self.cursor_interactive:
+            # Interactive cursor (when hovering over cards)
+            base_color = self.colors['accent_success']
+            size = int(size * 1.5)  # Larger when interactive
+        else:
+            # Normal cursor
+            base_color = self.colors['accent_primary']
+        
+        # Create soft cursor with multiple layers
+        for i in range(3):
+            layer_size = size - i * 4
+            if layer_size <= 0:
+                break
+            
+            # Calculate alpha for each layer
+            layer_alpha = self.cursor_alpha * (1.0 - i * 0.3)
+            if layer_alpha <= 0:
+                break
+            
+            # Create color with alpha
+            color = tuple(int(c * layer_alpha) for c in base_color)
+            
+            # Draw soft circle
+            cv2.circle(frame, (x, y), layer_size, color, -1, cv2.LINE_AA)
+        
+        # Draw center dot
+        center_color = tuple(int(c * self.cursor_alpha) for c in base_color)
+        cv2.circle(frame, (x, y), 3, center_color, -1, cv2.LINE_AA)
+        
+        # Draw subtle glow effect
+        glow_size = size + 8
+        glow_color = tuple(int(c * 0.2) for c in base_color)
+        cv2.circle(frame, (x, y), glow_size, glow_color, 2, cv2.LINE_AA)
+    
+    def toggle_fullscreen(self):
+        """Toggle between full screen and windowed mode"""
+        try:
+            current_prop = cv2.getWindowProperty('CVGames App Store', cv2.WND_PROP_FULLSCREEN)
+            if current_prop == cv2.WINDOW_FULLSCREEN:
+                # Switch to windowed mode
+                cv2.setWindowProperty('CVGames App Store', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+                cv2.resizeWindow('CVGames App Store', self.screen_width, self.screen_height)
+                print("🖥️ Switched to windowed mode")
+            else:
+                # Switch to full screen mode
+                cv2.setWindowProperty('CVGames App Store', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                cv2.moveWindow('CVGames App Store', 0, 0)
+                print("🖥️ Switched to full screen mode")
+        except Exception as e:
+            print(f"⚠️ Error toggling full screen: {e}")
+    
+    def ensure_fullscreen(self):
+        """Ensure the window is in full screen mode"""
+        try:
+            cv2.setWindowProperty('CVGames App Store', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+            cv2.moveWindow('CVGames App Store', 0, 0)
+        except Exception as e:
+            print(f"⚠️ Error ensuring full screen: {e}")
+    
     def process_hand_tracking(self, frame, results):
         """Process hand tracking results"""
         if not results.multi_hand_landmarks or not self.can_interact():
@@ -833,6 +1036,10 @@ class AppStore:
             for card in self.games:
                 card.is_hovered = False
                 card.selection_progress = 0.0
+            
+            # Hide cursor when no hands detected
+            self.cursor_visible = False
+            self.cursor_interactive = False
             return
         
         # Get hand position
@@ -840,6 +1047,19 @@ class AppStore:
         self.hand_positions.append(hand_pos)
         if len(self.hand_positions) > 10:
             self.hand_positions.pop(0)
+        
+        # Update cursor position with smoothing
+        if self.cursor_visible:
+            # Smooth cursor movement
+            smooth_x = int(self.cursor_position[0] * (1 - self.cursor_smooth_factor) + 
+                          hand_pos[0] * self.cursor_smooth_factor)
+            smooth_y = int(self.cursor_position[1] * (1 - self.cursor_smooth_factor) + 
+                          hand_pos[1] * self.cursor_smooth_factor)
+            self.cursor_position = (smooth_x, smooth_y)
+        else:
+            # Initialize cursor position
+            self.cursor_position = hand_pos
+            self.cursor_visible = True
         
         # Check for swipe gestures
         swipe_direction = self.detect_swipe_gesture()
@@ -850,6 +1070,9 @@ class AppStore:
         current_time = time.time()
         start_index = self.current_page * self.games_per_page
         end_index = min(start_index + self.games_per_page, len(self.games))
+        
+        # Reset cursor interaction state
+        self.cursor_interactive = False
         
         for i in range(start_index, end_index):
             card_index = i - start_index
@@ -862,6 +1085,9 @@ class AppStore:
                     card.is_hovered = True
                     card.hover_start_time = current_time
                     print(f"👋 Hovering over: {card.name}")
+                
+                # Set cursor to interactive state
+                self.cursor_interactive = True
                 
                 # Update selection progress
                 elapsed = current_time - card.hover_start_time
@@ -879,6 +1105,14 @@ class AppStore:
     def run(self):
         """Main application loop"""
         print("🚀 Starting CVGames App Store...")
+        print("🖥️ App will start in full screen mode")
+        print("📋 Controls:")
+        print("   - Move your hand to control the cursor")
+        print("   - Hover over games to select them")
+        print("   - Press 'F' to toggle full screen")
+        print("   - Press 'A' for previous page, 'D' for next page")
+        print("   - Press 'Q' or 'ESC' to quit")
+        print("=" * 50)
         
         while not self.shutting_down:
             try:
@@ -910,12 +1144,17 @@ class AppStore:
                 if key == ord('q') or key == 27:  # 'q' or ESC
                     print("👋 Shutting down...")
                     break
+                elif key == ord('f'):  # Toggle full screen
+                    self.toggle_fullscreen()
                 elif key == ord('a'):  # Previous page
                     if self.current_page > 0:
                         self.current_page -= 1
                 elif key == ord('d'):  # Next page
                     if (self.current_page + 1) * self.games_per_page < len(self.games):
                         self.current_page += 1
+                
+                # Ensure full screen mode is maintained (in case window was moved)
+                self.ensure_fullscreen()
                 
             except Exception as e:
                 print(f"❌ Error in main loop: {e}")

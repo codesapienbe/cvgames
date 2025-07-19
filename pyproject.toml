@@ -41,3 +41,4 @@ dependencies = [
 [project.scripts]
 csvstore = "csvstore:main"
 appstore = "appstore:main"
+duckhunt = "duckhunt:main"
