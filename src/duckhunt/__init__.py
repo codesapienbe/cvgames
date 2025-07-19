@@ -36,10 +36,11 @@ class RetroColors:
     CROSSHAIR_RED = (0, 0, 168)      # Crosshair color
 
 class Duck:
-    def __init__(self, screen_width, screen_height, duck_type="normal"):
+    def __init__(self, screen_width, screen_height, duck_type="normal", level=1):
         self.screen_width = screen_width
         self.screen_height = screen_height
         self.duck_type = duck_type
+        self.level = level
         self.reset()
         
     def reset(self):
@@ -70,9 +71,26 @@ class Duck:
         self.width = 80
         self.height = 60
         
+        # Level-based speed scaling
+        speed_multiplier = 1.0 + (self.level - 1) * 0.3  # 1.0, 1.3, 1.6, 1.9...
+        
+        # Apply duck type modifiers
+        if self.duck_type == "fast":
+            speed_multiplier *= 1.5
+            self.width = 70  # Slightly smaller
+            self.height = 50
+        elif self.duck_type == "golden":
+            speed_multiplier *= 0.8  # Slower but worth more
+            self.width = 90  # Slightly larger
+            self.height = 70
+        
+        # Apply speed multiplier
+        self.speed_x *= speed_multiplier
+        self.speed_y *= speed_multiplier
+        
         # Animation
         self.wing_flap = 0
-        self.wing_speed = 0.3
+        self.wing_speed = 0.3 * speed_multiplier
         self.direction = 1 if self.speed_x > 0 else -1
         
         # State
@@ -127,10 +145,17 @@ class Duck:
         body_width = self.width // 2
         body_height = self.height // 3
         
+        # Choose color based on duck type
+        body_color = RetroColors.DUCK_BROWN
+        if self.duck_type == "golden":
+            body_color = RetroColors.YELLOW  # Golden color
+        elif self.duck_type == "fast":
+            body_color = (100, 50, 0)  # Darker brown for fast ducks
+        
         cv2.ellipse(frame, 
                    (int(self.x), int(self.y)), 
                    (body_width, body_height), 
-                   0, 0, 360, RetroColors.DUCK_BROWN, -1)
+                   0, 0, 360, body_color, -1)
         
         # Duck head (circular, positioned based on direction)
         head_offset_x = (self.width // 3) * self.direction
@@ -247,19 +272,22 @@ class RetroDuckHuntGame:
         
         # Game state
         self.round = 1
+        self.level = 1
         self.score = 0
         self.shots_fired = 0
-        self.shots_per_round = 3
+        self.shots_per_round = 6  # Base shots per round
         self.ducks_shot = 0
         self.ducks_missed = 0
-        self.ducks_per_round = 10
+        self.ducks_per_round = 3  # Base ducks per round
         
         # Duck management
         self.ducks = []
-        self.max_ducks_on_screen = 2
+        self.max_ducks_on_screen = 2  # Base max ducks on screen
         self.duck_spawn_timer = 0
-        self.duck_spawn_interval = 3.0
+        self.duck_spawn_interval = 2.0  # Base spawn interval
         self.ducks_spawned_this_round = 0
+        self.ducks_escaped_this_round = 0
+        self.round_complete = False
         
         # Enhanced shooting mechanics
         self.can_shoot = True
@@ -287,6 +315,24 @@ class RetroDuckHuntGame:
         # Game timing
         self.game_start_time = time.time()
         self.round_start_time = time.time()
+        
+        # Initialize level settings
+        self.update_level_settings()
+        
+    def update_level_settings(self):
+        """Update game settings based on current level"""
+        # Calculate level based on rounds completed
+        self.level = (self.round - 1) // 3 + 1
+        
+        # Progressive difficulty scaling
+        self.ducks_per_round = 3 + (self.level - 1) * 2  # 3, 5, 7, 9, 11...
+        self.max_ducks_on_screen = min(6, 2 + self.level)  # 2, 3, 4, 5, 6...
+        self.shots_per_round = 6 + (self.level - 1) * 2  # 6, 8, 10, 12, 14...
+        
+        # Faster spawning at higher levels
+        self.duck_spawn_interval = max(0.8, 2.0 - (self.level - 1) * 0.3)  # 2.0, 1.7, 1.4, 1.1, 0.8...
+        
+        print(f"🎯 LEVEL {self.level} - Ducks: {self.ducks_per_round}, Max on screen: {self.max_ducks_on_screen}, Shots: {self.shots_per_round}")
         
     def detect_enhanced_gun_gesture(self, landmarks):
         """Simplified and more reliable gun gesture detection"""
@@ -397,8 +443,18 @@ class RetroDuckHuntGame:
             if duck.check_hit(shot_x, shot_y):
                 hit_any_duck = True
                 
-                # Authentic Duck Hunt scoring
+                # Enhanced scoring based on duck type and level
                 base_score = 500  # Base score for hitting duck
+                
+                # Duck type bonuses
+                if duck.duck_type == "golden":
+                    base_score = 1500  # Golden ducks worth 3x more
+                elif duck.duck_type == "fast":
+                    base_score = 800   # Fast ducks worth 1.6x more
+                
+                # Level bonus (higher levels = more points)
+                level_bonus = (self.level - 1) * 100
+                base_score += level_bonus
                 
                 # Bonus for quick shots
                 duck_alive_time = current_time - duck.hit_time if hasattr(duck, 'spawn_time') else 1
@@ -408,13 +464,15 @@ class RetroDuckHuntGame:
                 self.score += base_score
                 self.ducks_shot += 1
                 
-                # Add hit effect
+                # Add hit effect with special effects for golden ducks
+                effect_duration = 2.0 if duck.duck_type == "golden" else 1.5
                 self.hit_effects.append({
                     'x': duck.x,
                     'y': duck.y,
                     'time': current_time,
-                    'duration': 1.5,
-                    'score': base_score
+                    'duration': effect_duration,
+                    'score': base_score,
+                    'duck_type': duck.duck_type
                 })
                 break
                 
@@ -422,14 +480,29 @@ class RetroDuckHuntGame:
             self.ducks_missed += 1
             
     def spawn_duck(self):
-        """Spawn duck with round-based logic"""
+        """Spawn duck with level-based logic and different types"""
         if (len(self.ducks) < self.max_ducks_on_screen and 
             self.ducks_spawned_this_round < self.ducks_per_round):
             
-            duck = Duck(self.screen_width, self.screen_height)
+            # Determine duck type based on level
+            duck_type = "normal"
+            if self.level >= 3:
+                # Golden ducks (rare, worth more points)
+                if random.random() < 0.1:  # 10% chance
+                    duck_type = "golden"
+            elif self.level >= 2:
+                # Fast ducks
+                if random.random() < 0.2:  # 20% chance
+                    duck_type = "fast"
+            
+            duck = Duck(self.screen_width, self.screen_height, duck_type, self.level)
             duck.spawn_time = time.time()
             self.ducks.append(duck)
             self.ducks_spawned_this_round += 1
+            
+            # Debug info for special ducks
+            if duck_type != "normal":
+                print(f"🦆 Spawned {duck_type.upper()} duck!")
             
     def update(self):
         """Update game with round-based progression"""
@@ -467,16 +540,20 @@ class RetroDuckHuntGame:
             self.advance_round()
             
     def advance_round(self):
-        """Advance to next round"""
+        """Advance to next round with level progression"""
         self.round += 1
         self.shots_fired = 0
         self.ducks_spawned_this_round = 0
+        self.ducks_escaped_this_round = 0
         self.can_shoot = True
         
-        # Increase difficulty
-        if self.round % 3 == 0:  # Every 3 rounds
-            self.max_ducks_on_screen = min(4, self.max_ducks_on_screen + 1)
-            self.duck_spawn_interval = max(1.5, self.duck_spawn_interval - 0.2)
+        # Update level settings
+        self.update_level_settings()
+        
+        # Show level up message
+        if self.round % 3 == 1:  # Start of new level
+            print(f"🎉 LEVEL UP! Now playing Level {self.level}")
+            print(f"📊 New settings: {self.ducks_per_round} ducks, {self.max_ducks_on_screen} max on screen, {self.shots_per_round} shots")
             
     def draw_authentic_background(self, frame):
         """Draw authentic Duck Hunt background"""
@@ -575,15 +652,19 @@ class RetroDuckHuntGame:
         cv2.putText(frame, score_text, (20, 40), 
                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, RetroColors.YELLOW, 2)
         
-        # Round display
+        # Level and Round display
+        level_text = f"LEVEL {self.level}"
+        cv2.putText(frame, level_text, (20, 80), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, RetroColors.WHITE, 2)
+        
         round_text = f"ROUND {self.round}"
-        cv2.putText(frame, round_text, (20, 80), 
+        cv2.putText(frame, round_text, (20, 110), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, RetroColors.WHITE, 2)
         
         # Shots remaining
         shots_remaining = self.shots_per_round - self.shots_fired
         shots_text = f"SHOTS: {shots_remaining}"
-        cv2.putText(frame, shots_text, (20, 110), 
+        cv2.putText(frame, shots_text, (20, 140), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, RetroColors.WHITE, 2)
         
         # Hit ratio
@@ -591,7 +672,7 @@ class RetroDuckHuntGame:
         if total_ducks > 0:
             hit_ratio = int((self.ducks_shot / total_ducks) * 100)
             ratio_text = f"HIT RATIO: {hit_ratio}%"
-            cv2.putText(frame, ratio_text, (20, 140), 
+            cv2.putText(frame, ratio_text, (20, 170), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, RetroColors.WHITE, 2)
         
         # Instructions
@@ -644,17 +725,27 @@ class RetroDuckHuntGame:
         for effect in self.hit_effects:
             alpha = 1.0 - (current_time - effect['time']) / effect['duration']
             if alpha > 0:
-                # Hit explosion
+                # Hit explosion with special effects for golden ducks
                 effect_size = int(40 * alpha)
+                effect_color = RetroColors.YELLOW if effect.get('duck_type') == "golden" else RetroColors.RED
+                effect_thickness = 5 if effect.get('duck_type') == "golden" else 3
+                
                 cv2.circle(frame, (int(effect['x']), int(effect['y'])), 
-                          effect_size, RetroColors.RED, 3)
+                          effect_size, effect_color, effect_thickness)
+                
+                # Extra sparkle effect for golden ducks
+                if effect.get('duck_type') == "golden":
+                    sparkle_size = int(20 * alpha)
+                    cv2.circle(frame, (int(effect['x']), int(effect['y'])), 
+                              sparkle_size, RetroColors.WHITE, 2)
                 
                 # Score popup
                 if 'score' in effect:
                     score_y = int(effect['y'] - 30 - (1 - alpha) * 50)
+                    score_color = RetroColors.YELLOW if effect.get('duck_type') == "golden" else RetroColors.YELLOW
                     cv2.putText(frame, f"+{effect['score']}", 
                                (int(effect['x'] - 30), score_y), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 1, RetroColors.YELLOW, 2)
+                               cv2.FONT_HERSHEY_SIMPLEX, 1, score_color, 2)
         
         # Draw target cursor
         self.draw_target_cursor(frame)

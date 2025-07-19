@@ -622,6 +622,18 @@
             "requirements": ["OpenCV", "MediaPipe"],
             "features": ["Hand gestures", "Duck hunting", "Score tracking"],
             "route": "duckhunt"
+        },
+        {
+            "id": 52,
+            "title": "Doom Hands",
+            "description": "Shoot zombies with hand gestures. Users hand must be like a gun. Zombie will move in a random direction. ",
+            "category": "Classic Games",
+            "age_range": "5+",
+            "difficulty": "Medium",
+            "duration": "10-30 min",
+            "requirements": ["OpenCV", "MediaPipe"],
+            "features": ["Hand gestures", "Zombie hunting", "Score tracking"],
+            "route": "doomhands"
         }
     ]
 }
