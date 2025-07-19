@@ -20,10 +20,23 @@ from enum import Enum
 
 # Import the loading state module
 try:
-    from .loading_state import LoadingState
+    from ..loading_state import LoadingState
 except ImportError:
-    # If loading_state doesn't exist yet, we'll create it
-    LoadingState = None
+    try:
+        from loading_state import LoadingState
+    except ImportError:
+        # If loading_state doesn't exist yet, we'll create it
+        LoadingState = None
+
+# Import the exiting state module
+try:
+    from ..exiting_state import ExitingState
+except ImportError:
+    try:
+        from exiting_state import ExitingState
+    except ImportError:
+        # If exiting_state doesn't exist yet, we'll create it
+        ExitingState = None
 
 class AppState(Enum):
     """Application state enumeration"""
@@ -34,6 +47,7 @@ class AppState(Enum):
     GAME_RUNNING = "GAME_RUNNING"      # Game is currently running
     GAME_STOP = "GAME_STOP"            # Game is being stopped/terminated
     GAME_RETURNING = "GAME_RETURNING"  # Returning from game to app store
+    GAME_EXITING = "GAME_EXITING"      # Game is exiting with free movement period
     STORE_START = "STORE_START"        # App store is starting/initializing
     STORE_STOP = "STORE_STOP"          # App store is shutting down
     PAUSED = "PAUSED"                 # Interaction is paused
@@ -95,13 +109,19 @@ class GameCard:
 
 class AppStore:
     def __init__(self):
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            max_num_hands=2,
-            min_detection_confidence=0.6,  # Slightly lower for better performance
-            min_tracking_confidence=0.4,   # Slightly lower for better performance
-            model_complexity=0  # Use faster model
-        )
+        # Initialize MediaPipe Hands
+        try:
+            self.hands = mp.solutions.hands.Hands(
+                static_image_mode=False,
+                max_num_hands=2,
+                min_detection_confidence=0.7,
+                min_tracking_confidence=0.5
+            )
+            print("✅ MediaPipe Hands initialized successfully")
+        except Exception as e:
+            print(f"❌ Error initializing MediaPipe Hands: {e}")
+            print("⚠️ Running in fallback mode without hand tracking")
+            self.hands = None
         self.mp_drawing = mp.solutions.drawing_utils
         
         # Screen setup
@@ -205,13 +225,37 @@ class AppStore:
         self.selected_game = None
         self.state_message = ""
         
+        # Game timeout management
+        self.game_start_timeout = 10.0  # 10 seconds timeout for game starting
+        self.game_start_time = 0.0  # Track when game started
+        self.loading_game = None
+        self.loading_progress = 0.0
+        self.loading_start_time = 0.0
+        self.loading_duration = 3.0  # 3 seconds for loading
+        self.exiting_game = False
+        self.exit_progress = 0.0
+        self.game_thread = None
+        self.game_process = None
+        self.game_completed = False
+        
+        # Exiting state timing is handled by ExitingState module
+        
         # Loading state management
         self.loading_state = None
         if LoadingState:
             self.loading_state = LoadingState(self.screen_width, self.screen_height)
         
+        # Exiting state management
+        self.exiting_state = None
+        if ExitingState:
+            self.exiting_state = ExitingState(self.screen_width, self.screen_height)
+        
         # Load all games
         self.load_games()
+        
+        # Create the main window
+        cv2.namedWindow('CVGames App Store', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('CVGames App Store', self.screen_width, self.screen_height)
         
         # Transition to IDLE when ready
         self.set_state(AppState.IDLE, "App store ready")
@@ -229,7 +273,7 @@ class AppStore:
         all_dirs = [d for d in src_path.iterdir() if d.is_dir()]
         print(f"📁 Found directories: {[d.name for d in all_dirs]}")
         
-        game_dirs = [d for d in src_path.iterdir() if d.is_dir() and d.name not in ['appstore', 'cvstore', 'loading_state', '__pycache__']]
+        game_dirs = [d for d in src_path.iterdir() if d.is_dir() and d.name not in ['appstore', 'cvstore', 'loading_state', 'exiting_state', '__pycache__']]
         print(f"🎮 Game directories found: {[d.name for d in game_dirs]}")
         
         for game_dir in game_dirs:
@@ -256,13 +300,27 @@ class AppStore:
                     try:
                         with open(readme_file, 'r', encoding='utf-8') as f:
                             content = f.read()
-                            # Extract first paragraph as description
+                            # Extract first meaningful paragraph as description
                             lines = content.split('\n')
+                            description_lines = []
                             for line in lines:
-                                if line.strip() and not line.startswith('#'):
-                                    description = line.strip()[:100] + "..." if len(line) > 100 else line.strip()
-                                    break
-                    except:
+                                line = line.strip()
+                                if line and not line.startswith('#') and not line.startswith('![') and not line.startswith('http'):
+                                    # Skip markdown links and images
+                                    if '[' in line and '](' in line:
+                                        continue
+                                    description_lines.append(line)
+                                    if len(description_lines) >= 2:  # Get first 2 meaningful lines
+                                        break
+                            
+                            if description_lines:
+                                description = ' '.join(description_lines)
+                                # Clean up the description
+                                description = description.replace('  ', ' ').strip()
+                                if len(description) > 120:
+                                    description = description[:120] + "..."
+                    except Exception as e:
+                        print(f"⚠️ Error reading README for {game_dir.name}: {e}")
                         pass
                 
                 # Try to read PLAYER.md for rules
@@ -318,6 +376,33 @@ class AppStore:
             self.state_duration = 0.0
             self.state_message = message
             
+            # Handle window visibility based on state
+            if new_state in [AppState.GAME_LOADING, AppState.GAME_RUNNING]:
+                # Hide app store window when game is loading or running
+                cv2.destroyWindow('CVGames App Store')
+                print("🪟 App store window hidden")
+            elif old_state in [AppState.GAME_LOADING, AppState.GAME_RUNNING] and new_state == AppState.GAME_RETURNING:
+                # Show app store window when returning from game
+                cv2.namedWindow('CVGames App Store', cv2.WINDOW_NORMAL)
+                cv2.resizeWindow('CVGames App Store', self.screen_width, self.screen_height)
+                print("🪟 App store window shown")
+            elif new_state == AppState.GAME_EXITING:
+                # Ensure window is visible for exiting state
+                cv2.namedWindow('CVGames App Store', cv2.WINDOW_NORMAL)
+                cv2.resizeWindow('CVGames App Store', self.screen_width, self.screen_height)
+                print("🪟 App store window ready for exiting state")
+            
+            # Handle exiting periods
+            if new_state == AppState.GAME_EXITING:
+                print("🔄 Starting game exit period - free movement only")
+                if self.exiting_state:
+                    self.exiting_state.start_exiting(
+                        self.selected_game.name if self.selected_game else "Game",
+                        self._on_exiting_complete
+                    )
+            elif old_state == AppState.GAME_EXITING and new_state == AppState.IDLE:
+                print("✅ Game exit period complete - ready for interaction")
+            
             # Calculate duration of previous state
             if hasattr(self, '_last_state_change'):
                 duration = time.time() - self._last_state_change
@@ -345,6 +430,12 @@ class AppStore:
     def can_interact(self) -> bool:
         """Check if user can interact based on current state"""
         state = self.get_state()
+        
+        # Check if we're in exiting period
+        if state == AppState.GAME_EXITING:
+            # Allow free movement during exiting, but no interactions
+            return False  # Free movement only
+        
         # Only allow interaction in these states
         return state in [AppState.IDLE, AppState.GAME_SELECTING, AppState.PAUSED]
     
@@ -688,42 +779,65 @@ class AppStore:
         cv2.rectangle(frame, (x + width - corner_size, y + height - corner_size), (x + width, y + height), corner_color, -1)
         
         # Game icon with glassmorphic effect
-        icon_size = int(min(100, width // 3) * zoom)
+        icon_size = int(min(80, width // 4) * zoom)
         icon_x = x + (width - icon_size) // 2
-        icon_y = y + int(30 * zoom)
+        icon_y = y + int(20 * zoom)
         
-        # Icon background with single layer for better performance
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (icon_x, icon_y), (icon_x + icon_size, icon_y + icon_size), 
-                     self.colors['accent'][:3], -1)
-        cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
-        
-        # Icon border
-        cv2.rectangle(frame, (icon_x, icon_y), (icon_x + icon_size, icon_y + icon_size), 
-                     self.colors['text_primary'], 2)
-        
-        # Icon content (game controller symbol)
-        controller_x = icon_x + icon_size // 2
-        controller_y = icon_y + icon_size // 2
-        controller_radius = int(15 * zoom)
-        cv2.circle(frame, (controller_x, controller_y), controller_radius, self.colors['text_primary'], 2)
-        cv2.circle(frame, (controller_x - int(8 * zoom), controller_y - int(8 * zoom)), int(3 * zoom), self.colors['success'], -1)
-        cv2.circle(frame, (controller_x + int(8 * zoom), controller_y - int(8 * zoom)), int(3 * zoom), self.colors['warning'], -1)
-        cv2.circle(frame, (controller_x, controller_y + int(8 * zoom)), int(3 * zoom), self.colors['accent'], -1)
+        # Try to load and display actual icon
+        try:
+            if card.icon_path and Path(card.icon_path).exists():
+                icon_img = cv2.imread(card.icon_path, cv2.IMREAD_UNCHANGED)
+                if icon_img is not None:
+                    # Resize icon to fit
+                    icon_img = cv2.resize(icon_img, (icon_size, icon_size))
+                    
+                    # Create icon background
+                    overlay = frame.copy()
+                    cv2.rectangle(overlay, (icon_x, icon_y), (icon_x + icon_size, icon_y + icon_size), 
+                                 self.colors['accent'][:3], -1)
+                    cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
+                    
+                    # Overlay the actual icon
+                    if len(icon_img.shape) == 3 and icon_img.shape[2] == 4:  # Has alpha channel
+                        # Handle alpha channel
+                        alpha = icon_img[:, :, 3] / 255.0
+                        for c in range(3):
+                            frame[icon_y:icon_y + icon_size, icon_x:icon_x + icon_size, c] = \
+                                frame[icon_y:icon_y + icon_size, icon_x:icon_x + icon_size, c] * (1 - alpha) + \
+                                icon_img[:, :, c] * alpha
+                    else:
+                        # No alpha channel, direct overlay
+                        frame[icon_y:icon_y + icon_size, icon_x:icon_x + icon_size] = icon_img
+                    
+                    # Icon border
+                    cv2.rectangle(frame, (icon_x, icon_y), (icon_x + icon_size, icon_y + icon_size), 
+                                 self.colors['text_primary'], 2)
+                else:
+                    # Fallback to controller symbol
+                    self._draw_controller_icon(frame, icon_x, icon_y, icon_size, zoom)
+            else:
+                # Fallback to controller symbol
+                self._draw_controller_icon(frame, icon_x, icon_y, icon_size, zoom)
+        except Exception as e:
+            # Fallback to controller symbol on error
+            self._draw_controller_icon(frame, icon_x, icon_y, icon_size, zoom)
         
         # Game name with glassmorphic text effect
         font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.9 if zoom > 1.0 else 0.7
+        font_scale = 0.8 if zoom > 1.0 else 0.6
         thickness = 2 if zoom > 1.0 else 1
         
+        # Clean up game name
+        game_name = card.name.replace('_', ' ').title()
+        
         # Wrap text if too long
-        words = card.name.split()
+        words = game_name.split()
         lines = []
         current_line = ""
         for word in words:
             test_line = current_line + " " + word if current_line else word
             (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, thickness)
-            if text_width <= width - int(30 * zoom):
+            if text_width <= width - int(40 * zoom):
                 current_line = test_line
             else:
                 if current_line:
@@ -733,13 +847,19 @@ class AppStore:
             lines.append(current_line)
         
         # Draw text lines with shadow effect
-        text_y = icon_y + icon_size + int(40 * zoom)
-        line_height = int(35 * zoom)
+        text_y = icon_y + icon_size + int(30 * zoom)
+        line_height = int(30 * zoom)
         for i, line in enumerate(lines):
-            if text_y + i * line_height > y + height - int(100 * zoom):  # Leave space for description
+            if text_y + i * line_height > y + height - int(120 * zoom):  # Leave space for description
                 break
             (text_width, text_height), _ = cv2.getTextSize(line, font, font_scale, thickness)
             text_x = x + (width - text_width) // 2
+            
+            # Text background for better readability
+            text_bg_y = text_y + i * line_height - int(15 * zoom)
+            cv2.rectangle(frame, (text_x - int(10 * zoom), text_bg_y), (text_x + text_width + int(10 * zoom), text_y + i * line_height + int(5 * zoom)), 
+                         self.colors['card_bg'][:3], -1)
+            cv2.addWeighted(frame, 0.3, frame, 0.7, 0, frame)
             
             # Text shadow
             cv2.putText(frame, line, (text_x + 2, text_y + i * line_height + 2), font, font_scale, 
@@ -749,21 +869,27 @@ class AppStore:
                        self.colors['text_primary'], thickness)
         
         # Game description with glassmorphic effect
-        desc = card.description[:60] + "..." if len(card.description) > 60 else card.description
-        desc_y = y + height - int(60 * zoom)
+        desc = self._format_description(card.description, width - int(40 * zoom), font, 0.5 * zoom, 1 if zoom <= 1.0 else 2)
+        desc_y = y + height - int(80 * zoom)
         desc_font_scale = 0.5 * zoom
         desc_thickness = 1 if zoom <= 1.0 else 2
-        (desc_width, desc_height), _ = cv2.getTextSize(desc, font, desc_font_scale, desc_thickness)
-        desc_x = x + (width - desc_width) // 2
+        line_height = int(20 * zoom)
         
-        # Description background
-        desc_bg_y = desc_y - int(15 * zoom)
-        cv2.rectangle(frame, (desc_x - int(10 * zoom), desc_bg_y), (desc_x + desc_width + int(10 * zoom), desc_y + int(10 * zoom)), 
-                     self.colors['card_bg'][:3], -1)
-        cv2.addWeighted(frame, 0.3, frame, 0.7, 0, frame)
-        
-        # Description text
-        cv2.putText(frame, desc, (desc_x, desc_y), font, desc_font_scale, self.colors['text_secondary'], desc_thickness)
+        # Draw each line of the description
+        for i, line in enumerate(desc):
+            if desc_y + i * line_height > y + height - int(20 * zoom):  # Don't overflow card
+                break
+            (desc_width, desc_height), _ = cv2.getTextSize(line, font, desc_font_scale, desc_thickness)
+            desc_x = x + (width - desc_width) // 2
+            
+            # Description background for each line
+            desc_bg_y = desc_y + i * line_height - int(15 * zoom)
+            cv2.rectangle(frame, (desc_x - int(10 * zoom), desc_bg_y), (desc_x + desc_width + int(10 * zoom), desc_y + i * line_height + int(5 * zoom)), 
+                         self.colors['card_bg'][:3], -1)
+            cv2.addWeighted(frame, 0.3, frame, 0.7, 0, frame)
+            
+            # Description text
+            cv2.putText(frame, line, (desc_x, desc_y + i * line_height), font, desc_font_scale, self.colors['text_secondary'], desc_thickness)
         
         # Selection indicator for simultaneous gesture
         if card.is_hovered and self.can_interact():
@@ -877,6 +1003,56 @@ class AppStore:
             
             # Indicator text
             cv2.putText(frame, indicator_text, (text_x, text_y), font, indicator_font_scale, (255, 200, 200), indicator_thickness)
+    
+    def _draw_controller_icon(self, frame, icon_x, icon_y, icon_size, zoom):
+        """Draw a fallback controller icon when no image is available"""
+        # Icon background
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (icon_x, icon_y), (icon_x + icon_size, icon_y + icon_size), 
+                     self.colors['accent'][:3], -1)
+        cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+        
+        # Icon border
+        cv2.rectangle(frame, (icon_x, icon_y), (icon_x + icon_size, icon_y + icon_size), 
+                     self.colors['text_primary'], 2)
+        
+        # Icon content (game controller symbol)
+        controller_x = icon_x + icon_size // 2
+        controller_y = icon_y + icon_size // 2
+        controller_radius = int(15 * zoom)
+        cv2.circle(frame, (controller_x, controller_y), controller_radius, self.colors['text_primary'], 2)
+        cv2.circle(frame, (controller_x - int(8 * zoom), controller_y - int(8 * zoom)), int(3 * zoom), self.colors['success'], -1)
+        cv2.circle(frame, (controller_x + int(8 * zoom), controller_y - int(8 * zoom)), int(3 * zoom), self.colors['warning'], -1)
+        cv2.circle(frame, (controller_x, controller_y + int(8 * zoom)), int(3 * zoom), self.colors['accent'], -1)
+    
+    def _format_description(self, description, max_width, font, font_scale, thickness):
+        """Format description text to fit within card width with proper wrapping"""
+        # Clean up description
+        desc = description.strip()
+        if len(desc) > 120:  # Truncate very long descriptions
+            desc = desc[:120] + "..."
+        
+        # Split into words and wrap
+        words = desc.split()
+        lines = []
+        current_line = ""
+        
+        for word in words:
+            test_line = current_line + " " + word if current_line else word
+            (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, thickness)
+            
+            if text_width <= max_width:
+                current_line = test_line
+            else:
+                if current_line:
+                    lines.append(current_line)
+                current_line = word
+        
+        if current_line:
+            lines.append(current_line)
+        
+        # Limit to 3 lines maximum
+        return lines[:3]
     
     def draw_info_modal(self, frame):
         """Draw the glassmorphic info modal with usage instructions"""
@@ -1628,7 +1804,13 @@ class AppStore:
     def _on_loading_complete(self):
         """Callback when loading is complete"""
         print("✅ LoadingState: Loading complete, transitioning to game running")
+        self.game_start_time = time.time()  # Track when game starts
         self.set_state(AppState.GAME_RUNNING, f"Running: {self.selected_game.name if self.selected_game else 'Game'}")
+        
+    def _on_exiting_complete(self):
+        """Callback when exiting is complete"""
+        print("✅ ExitingState: Exit complete, returning to app store")
+        self.set_state(AppState.IDLE, "Ready for interaction")
     
     def _launch_game_fallback(self, game_card: GameCard):
         """Fallback game launching method"""
@@ -1658,6 +1840,7 @@ class AppStore:
             if init_file.exists():
                 print(f"🎮 Starting {game_card.name} in thread...")
                 self.set_state(AppState.GAME_START, f"Starting: {game_card.name}")
+                self.game_start_time = time.time()  # Track when game starts
                 
                 # Use subprocess to run the game
                 self.game_process = subprocess.Popen([sys.executable, str(init_file)], 
@@ -1682,6 +1865,7 @@ class AppStore:
                 # Signal game completion (thread-safe)
                 with self.game_lock:
                     self.game_completed = True
+                    print(f"🎮 Game completion signal sent for {game_card.name}")
                 
             else:
                 print(f"❌ Game file not found: {init_file}")
@@ -1704,10 +1888,12 @@ class AppStore:
         finally:
             # Return to the original directory
             os.chdir(Path(__file__).parent.parent)
-            # Return to idle state when game ends (only if not shutting down)
+            # Return to exiting state when game ends (only if not shutting down)
             if not self.shutting_down:
                 self.set_state(AppState.GAME_RETURNING, "Returning to app store")
-                print("✅ Returning to app store")
+                time.sleep(0.5)  # Brief pause
+                self.set_state(AppState.GAME_EXITING, "Game exit period")
+                print("✅ Returning to app store - exit period started")
     
     def run(self):
         """Main app store loop"""
@@ -1743,10 +1929,67 @@ class AppStore:
                 if loading_complete:
                     # Loading is complete, LoadingState will call the callback
                     pass
+                else:
+                    # Check for loading timeout
+                    if time.time() - self.loading_start_time > self.game_start_timeout:
+                        print(f"⏰ Loading timeout reached ({self.game_start_timeout}s) - aborting game launch")
+                        self.set_state(AppState.ERROR, "Game loading timeout")
+                        self.set_state(AppState.IDLE, "Ready for selection")
+                        # Reset loading state
+                        self.loading_game = None
+                        self.selected_game = None
+            
+            # Update exiting progress
+            if self.exiting_state and self.is_state(AppState.GAME_EXITING):
+                # Use ExitingState for exiting management
+                exiting_complete = self.exiting_state.update(0.033)  # 30 FPS
+                if exiting_complete:
+                    # Exiting is complete, ExitingState will call the callback
+                    pass
+            
+            # Check for game process completion (additional safety check)
+            if self.is_state(AppState.GAME_RUNNING) and self.game_process:
+                if self.game_process.poll() is not None:
+                    print(f"🎮 Game process detected as finished (exit code: {self.game_process.returncode})")
+                    with self.game_lock:
+                        self.game_completed = True
+                    self.game_process = None
+                else:
+                    # Check for timeout
+                    if time.time() - self.game_start_time > self.game_start_timeout:
+                        print(f"⏰ Game start timeout reached ({self.game_start_timeout}s) - terminating game")
+                        self.set_state(AppState.GAME_STOP, "Game start timeout")
+                        try:
+                            self.game_process.terminate()
+                            self.game_process.wait(timeout=2)
+                        except:
+                            self.game_process.kill()
+                        self.game_process = None
+                        with self.game_lock:
+                            self.game_completed = True
             elif self.loading_game:
                 # Fallback loading logic
                 elapsed_time = time.time() - self.loading_start_time
                 self.loading_progress = min(elapsed_time / self.loading_duration, 1.0)
+                
+                # Check for loading timeout
+                if elapsed_time > self.game_start_timeout:
+                    print(f"⏰ Fallback loading timeout reached ({self.game_start_timeout}s) - aborting game launch")
+                    self.set_state(AppState.ERROR, "Game loading timeout")
+                    self.set_state(AppState.IDLE, "Ready for selection")
+                    # Reset loading state
+                    self.loading_game = None
+                    self.selected_game = None
+                    if self.game_thread and self.game_thread.is_alive():
+                        # Try to terminate the game process if it exists
+                        if self.game_process:
+                            try:
+                                self.game_process.terminate()
+                                self.game_process.wait(timeout=2)
+                            except:
+                                self.game_process.kill()
+                            self.game_process = None
+                    continue
                 
                 # Check if game thread is still running
                 if self.game_thread and not self.game_thread.is_alive():
@@ -1776,6 +2019,11 @@ class AppStore:
                     self.game_completed = False  # Reset flag
                     self.game_thread = None  # Clear thread reference
                     print("🎮 Game completed - starting exit sequence")
+                    
+                    # Also check if game process has actually finished
+                    if self.game_process and self.game_process.poll() is not None:
+                        print(f"🎮 Game process exit code: {self.game_process.returncode}")
+                        self.game_process = None  # Clear process reference
             
             # Update exit progress
             if self.exiting_game:
@@ -1783,7 +2031,11 @@ class AppStore:
                 if self.exit_progress >= 1.0:
                     self.exiting_game = False
                     self.exit_progress = 0.0
-                    self.set_state(AppState.IDLE, "Ready for selection")
+                    # Start exiting state instead of going directly to IDLE
+                    self.set_state(AppState.GAME_RETURNING, "Returning from game")
+                    time.sleep(0.5)  # Brief pause
+                    self.set_state(AppState.GAME_EXITING, "Game exit period")
+                    print("🎮 Transitioning to exiting state")
             
             # Create a black background instead of showing camera feed
             frame = np.zeros((self.screen_height, self.screen_width, 3), dtype=np.uint8)
@@ -1796,7 +2048,11 @@ class AppStore:
                 # Resize to smaller size for processing (faster)
                 process_frame = cv2.resize(original_frame, (640, 480))
                 rgb_frame = cv2.cvtColor(process_frame, cv2.COLOR_BGR2RGB)
-                results = self.hands.process(rgb_frame)
+                try:
+                    results = self.hands.process(rgb_frame)
+                except Exception as e:
+                    print(f"⚠️ MediaPipe processing error: {e}")
+                    results = None
             else:
                 results = None
             
@@ -1805,7 +2061,7 @@ class AppStore:
                 card.is_hovered = False
             
             # Handle hand tracking and gestures
-            if results.multi_hand_landmarks and self.can_interact():
+            if results and results.multi_hand_landmarks and self.can_interact():
                 # Check for pause gesture: both hands raised and both closed
                 if len(results.multi_hand_landmarks) >= 2:
                     if self.detect_pause_gesture(results.multi_hand_landmarks):
@@ -1829,6 +2085,9 @@ class AppStore:
                 primary_hand_x, primary_hand_y = self.get_primary_hand_position(results.multi_hand_landmarks)
                 self.update_smooth_hand_position((primary_hand_x, primary_hand_y))
                 
+                # Use the actual hand position for interaction, not the smoothed position
+                interaction_x, interaction_y = primary_hand_x, primary_hand_y
+                
                 # Process hand gestures for game selection and info button
                 for hand_landmarks in results.multi_hand_landmarks:
                     # Draw only dots on finger tips instead of full hand landmarks
@@ -1838,7 +2097,7 @@ class AppStore:
                     hand_x, hand_y = self.get_hand_position(hand_landmarks)
                     
                     # Check for info button hover and hold
-                    if self.is_point_in_rect((primary_hand_x, primary_hand_y), self.info_button_rect):
+                    if self.is_point_in_rect((interaction_x, interaction_y), self.info_button_rect):
                         # Start or continue info button hold
                         if not hasattr(self, 'info_button_hold_start'):
                             self.info_button_hold_start = time.time()
@@ -1860,7 +2119,7 @@ class AppStore:
                             self.info_button_hold_start = 0
                     
                     # Check for navigation button hover and hold
-                    if self.is_point_in_rect((primary_hand_x, primary_hand_y), self.left_nav_rect):
+                    if self.is_point_in_rect((interaction_x, interaction_y), self.left_nav_rect):
                         # Start or continue left nav hold
                         if not hasattr(self, 'left_nav_hold_start'):
                             self.left_nav_hold_start = time.time()
@@ -1880,7 +2139,7 @@ class AppStore:
                         if hasattr(self, 'left_nav_hold_start'):
                             self.left_nav_hold_start = 0
                     
-                    if self.is_point_in_rect((primary_hand_x, primary_hand_y), self.right_nav_rect):
+                    if self.is_point_in_rect((interaction_x, interaction_y), self.right_nav_rect):
                         # Start or continue right nav hold
                         if not hasattr(self, 'right_nav_hold_start'):
                             self.right_nav_hold_start = time.time()
@@ -1901,7 +2160,7 @@ class AppStore:
                             self.right_nav_hold_start = 0
                     
                     # Check for tutorial close with hold
-                    if self.show_slide_tutorial and self.is_point_in_rect((primary_hand_x, primary_hand_y), (0, 0, self.screen_width, self.screen_height)):
+                    if self.show_slide_tutorial and self.is_point_in_rect((interaction_x, interaction_y), (0, 0, self.screen_width, self.screen_height)):
                         # Start or continue tutorial close hold
                         if not hasattr(self, 'tutorial_close_hold_start'):
                             self.tutorial_close_hold_start = time.time()
@@ -1930,7 +2189,7 @@ class AppStore:
                     card = self.games[i]
                     card_rect = self.get_card_position(card_index)
                     
-                    if self.is_point_in_rect((primary_hand_x, primary_hand_y), card_rect):
+                    if self.is_point_in_rect((interaction_x, interaction_y), card_rect):
                         card.is_hovered = True
                         
                         # Only allow selection if we can interact
@@ -1972,7 +2231,7 @@ class AppStore:
                 current_time = time.time()
                 if current_time - self.interaction_timer > self.interaction_timeout:
                     # Check if hands are no longer raised
-                    if results.multi_hand_landmarks:
+                    if results and results.multi_hand_landmarks:
                         hands_raised = self.detect_hands_raised(results.multi_hand_landmarks)
                         if not hands_raised:
                             self.interaction_enabled = True
@@ -2035,17 +2294,19 @@ class AppStore:
             # Draw glassmorphic instructions
             current_state = self.get_state()
             if current_state == AppState.GAME_LOADING:
-                instructions = "Game is loading... | Please wait | No interaction available during loading"
+                instructions = "Game is loading..."
             elif current_state == AppState.GAME_START:
-                instructions = "Game is starting... | Please wait | No interaction available during startup"
+                instructions = "Game is starting..."
             elif current_state == AppState.GAME_RUNNING:
-                instructions = "Game is running... | Hold over buttons for 5 seconds to interact | Click INFO for tutorial"
+                instructions = "Game is running..."
             elif current_state == AppState.GAME_STOP:
-                instructions = "Game is stopping... | Please wait | No interaction available during shutdown"
+                instructions = "Game is stopping..."
             elif current_state == AppState.GAME_RETURNING:
-                instructions = "Returning to app store... | Please wait | No interaction available during return"
+                instructions = "Returning to app store..."
+            elif current_state == AppState.GAME_EXITING:
+                instructions = "Free movement period - preparing app store"
             else:
-                instructions = "HOLD hand over game card for 5 seconds to select | HOLD over buttons for 5 seconds to interact | HOLD at screen edges for 5 seconds to swipe | Click INFO for tutorial"
+                instructions = "HOLD hand over game card for 5 seconds to select"
             (inst_width, inst_height), _ = cv2.getTextSize(instructions, font, 0.7, 1)
             
             # Instructions background
@@ -2057,16 +2318,26 @@ class AppStore:
             cv2.putText(frame, instructions, (50, self.screen_height - 20), font, 0.7, self.colors['text_secondary'], 1)
             
             # Draw hand trail and cursor
-            if len(self.hand_positions) > 1:
-                self.draw_hand_trail(frame, self.hand_positions[-5:])  # Last 5 positions
-            self.draw_visual_cursor(frame, self.smooth_hand_position[0], self.smooth_hand_position[1])
+            if not self.is_state(AppState.GAME_LOADING):
+                if self.hands and len(self.hand_positions) > 1:
+                    self.draw_hand_trail(frame, self.hand_positions[-5:])  # Last 5 positions
+                if self.hands:
+                    # Use the actual hand position for visual cursor, not smoothed
+                    if 'interaction_x' in locals() and 'interaction_y' in locals():
+                        self.draw_visual_cursor(frame, interaction_x, interaction_y)
+                    else:
+                        self.draw_visual_cursor(frame, self.smooth_hand_position[0], self.smooth_hand_position[1])
+                else:
+                    # Show fallback message when MediaPipe is not available
+                    self.draw_fallback_message(frame)
             
             # Draw slide indicator if active
             if self.slide_indicator_alpha > 0:
                 self.draw_slide_indicator(frame, self.last_slide_direction)
             
             # Draw swipe hold progress
-            self.draw_swipe_hold_progress(frame)
+            if not self.is_state(AppState.GAME_LOADING):
+                self.draw_swipe_hold_progress(frame)
             
             # Draw loading progress if active
             if self.loading_game:
@@ -2075,6 +2346,24 @@ class AppStore:
             # Draw dedicated loading screen if in loading state
             if self.loading_state and self.is_state(AppState.GAME_LOADING):
                 self.loading_state.draw(frame)
+            
+            # Draw dedicated exiting screen if in exiting state
+            if self.exiting_state and self.is_state(AppState.GAME_EXITING):
+                # Allow hand tracking for free movement during exiting
+                if results and results.multi_hand_landmarks:
+                    # Get primary hand position for cursor display
+                    primary_hand_x, primary_hand_y = self.get_primary_hand_position(results.multi_hand_landmarks)
+                    self.update_smooth_hand_position((primary_hand_x, primary_hand_y))
+                    
+                    # Draw hand cursor for free movement feedback
+                    self.draw_visual_cursor(frame, primary_hand_x, primary_hand_y)
+                
+                # Draw the exiting screen
+                self.exiting_state.draw(frame)
+                
+                # Show the frame and continue to next iteration
+                cv2.imshow('CVGames App Store', frame)
+                continue  # Skip to next iteration to avoid blocking
             
             # Draw exit progress if active
             if self.exiting_game:
@@ -2088,43 +2377,45 @@ class AppStore:
             current_page_start = self.current_page * self.games_per_page
             current_page_end = min(current_page_start + self.games_per_page, len(self.games))
             
-            for i in range(current_page_start, current_page_end):
-                card_index = i - current_page_start
-                card = self.games[i]
-                card_rect = self.get_card_position(card_index)
-                self.draw_glassmorphic_card(frame, card, *card_rect)
+            # Only render game cards if not in loading state
+            if not self.is_state(AppState.GAME_LOADING):
+                for i in range(current_page_start, current_page_end):
+                    card_index = i - current_page_start
+                    card = self.games[i]
+                    card_rect = self.get_card_position(card_index)
+                    self.draw_glassmorphic_card(frame, card, card_rect[0], card_rect[1], card_rect[2], card_rect[3])
             
             # Draw glassmorphic navigation buttons (only when not loading)
-            if not self.loading_game and not self.exiting_game:
-                if self.current_page > 0:
-                    self.draw_navigation_button(frame, "left", self.left_nav_rect)
+            if not self.is_state(AppState.GAME_LOADING):
+                # Left navigation button
+                left_nav_rect = (50, self.screen_height // 2 - 50, 80, 100)
+                self.draw_navigation_button(frame, "left", left_nav_rect)
                 
-                if (self.current_page + 1) * self.games_per_page < len(self.games):
-                    self.draw_navigation_button(frame, "right", self.right_nav_rect)
+                # Right navigation button
+                right_nav_rect = (self.screen_width - 130, self.screen_height // 2 - 50, 80, 100)
+                self.draw_navigation_button(frame, "right", right_nav_rect)
+                
+                # Info button
+                self.draw_info_button(frame)
+                
+                # Page dots
+                total_pages = (len(self.games) + self.games_per_page - 1) // self.games_per_page
+                self.draw_page_dots(frame, total_pages, self.current_page)
             
-            # Draw glassmorphic page indicator
-            total_pages = (len(self.games) + self.games_per_page - 1) // self.games_per_page
-            page_text = f"Page {self.current_page + 1} of {total_pages}"
-            (page_width, page_height), _ = cv2.getTextSize(page_text, font, 0.9, 2)
-            page_x = (self.screen_width - page_width) // 2
-            page_y = self.screen_height - 50
+            # Only show the app store window when not in game states
+            if not self.is_state(AppState.GAME_LOADING) and not self.is_state(AppState.GAME_RUNNING):
+                cv2.imshow('CVGames App Store', frame)
+            else:
+                # Hide the app store window when game is loading or running
+                cv2.destroyWindow('CVGames App Store')
             
-            # Page indicator background
-            cv2.rectangle(frame, (page_x - 15, page_y - 25), (page_x + page_width + 15, page_y + 10), 
-                         self.colors['card_bg'][:3], -1)
-            cv2.addWeighted(frame, 0.3, frame, 0.7, 0, frame)
-            
-            # Page indicator text with shadow
-            cv2.putText(frame, page_text, (page_x + 2, page_y + 2), font, 0.9, (0, 0, 0), 3)
-            cv2.putText(frame, page_text, (page_x, page_y), font, 0.9, self.colors['text_primary'], 2)
-            
-            # Page dots indicator
-            self.draw_page_dots(frame, total_pages, self.current_page)
-            
-            cv2.imshow('CVGames App Store', frame)
-            
-            # Handle keyboard input
-            key = cv2.waitKey(1) & 0xFF
+            # Handle keyboard input (only when app store window is visible)
+            if not self.is_state(AppState.GAME_LOADING) and not self.is_state(AppState.GAME_RUNNING) and not self.is_state(AppState.GAME_EXITING):
+                key = cv2.waitKey(1) & 0xFF
+            else:
+                # When game is loading, running, or exiting, don't process anything - let the game/exiting state run
+                time.sleep(0.1)  # Small delay to reduce CPU usage
+                key = 255  # No key pressed
             if key == ord('q'):
                 print("🔄 Shutting down app store and terminating any running games...")
                 # Set flag to indicate we're shutting down
@@ -2133,6 +2424,10 @@ class AppStore:
                 # Shutdown loading state if active
                 if self.loading_state:
                     self.loading_state.shutdown()
+                
+                # Shutdown exiting state if active
+                if self.exiting_state:
+                    self.exiting_state.shutdown()
                 
                 self.set_state(AppState.STORE_STOP, "Shutting down app store")
                 break
@@ -2342,6 +2637,41 @@ class AppStore:
         
         cv2.putText(frame, duration_text, (duration_x, duration_y), font, 0.5, (200, 200, 200), 1)
 
+    def draw_fallback_message(self, frame):
+        """Draw a fallback message when MediaPipe is not available"""
+        # Create a semi-transparent overlay
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (0, 0), (self.screen_width, self.screen_height), (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.3, frame, 0.7, 0, frame)
+        
+        # Fallback message
+        title = "MediaPipe Not Available"
+        subtitle = "Hand tracking is disabled"
+        instruction = "Use keyboard 'q' to quit, 'i' for tutorial"
+        
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        
+        # Title
+        (title_width, title_height), _ = cv2.getTextSize(title, font, 1.5, 2)
+        title_x = (self.screen_width - title_width) // 2
+        title_y = self.screen_height // 2 - 50
+        
+        cv2.putText(frame, title, (title_x, title_y), font, 1.5, (255, 165, 0), 2)
+        
+        # Subtitle
+        (subtitle_width, subtitle_height), _ = cv2.getTextSize(subtitle, font, 1.0, 1)
+        subtitle_x = (self.screen_width - subtitle_width) // 2
+        subtitle_y = title_y + 50
+        
+        cv2.putText(frame, subtitle, (subtitle_x, subtitle_y), font, 1.0, (255, 255, 255), 1)
+        
+        # Instruction
+        (inst_width, inst_height), _ = cv2.getTextSize(instruction, font, 0.8, 1)
+        inst_x = (self.screen_width - inst_width) // 2
+        inst_y = subtitle_y + 50
+        
+        cv2.putText(frame, instruction, (inst_x, inst_y), font, 0.8, (200, 200, 200), 1)
+
 
 
 def main():
@@ -2359,12 +2689,8 @@ def main():
         return
     
     print("\n🚀 Starting CVGames App Store...")
-    print("💡 Press 'q' to quit the app store and terminate any running games")
-    print("💡 Press 'i' to toggle tutorial")
-    print("💡 Use index-middle finger pinch to click")
-    print("💡 Click on game cards to launch them")
-    print("💡 Click on navigation buttons to change pages")
-    print("💡 Click on INFO button for tutorial")
+    print("💡 Press 'q' to quit")
+    print("💡 Press 'i' for tutorial")
     print("=" * 40)
     
     app_store = None

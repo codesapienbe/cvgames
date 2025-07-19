@@ -198,6 +198,22 @@ class LoadingState:
         
         cv2.putText(frame, message, (message_x, message_y), font, 0.8, (200, 200, 200), 1)
         
+        # Timeout warning (show after 7 seconds)
+        elapsed_time = time.time() - self.loading_start_time
+        if elapsed_time > 7.0:
+            timeout_warning = f"Loading taking longer than expected... ({elapsed_time:.1f}s)"
+            (warning_width, warning_height), _ = cv2.getTextSize(timeout_warning, font, 0.6, 1)
+            warning_x = (self.screen_width - warning_width) // 2
+            warning_y = message_y + 40
+            
+            # Warning background
+            cv2.rectangle(frame, (warning_x - 10, warning_y - 15), (warning_x + warning_width + 10, warning_y + 5), 
+                         (50, 50, 50), -1)
+            cv2.addWeighted(frame, 0.3, frame, 0.7, 0, frame)
+            
+            # Warning text (yellow for timeout warning)
+            cv2.putText(frame, timeout_warning, (warning_x, warning_y), font, 0.6, (0, 255, 255), 1)
+        
         # Animated loading dots
         dots = "." * (int(self.animation_time * 2) % 4)
         dots_text = f"Loading{dots}"
@@ -206,14 +222,6 @@ class LoadingState:
         dots_y = message_y + 40
         
         cv2.putText(frame, dots_text, (dots_x, dots_y), font, 0.6, (150, 150, 150), 1)
-        
-        # Instructions
-        instructions = "Please wait - no interaction available during loading"
-        (inst_width, inst_height), _ = cv2.getTextSize(instructions, font, 0.7, 1)
-        inst_x = (self.screen_width - inst_width) // 2
-        inst_y = self.screen_height - 100
-        
-        cv2.putText(frame, instructions, (inst_x, inst_y), font, 0.7, (100, 100, 100), 1)
         
     def shutdown(self):
         """Shutdown the loading state"""
