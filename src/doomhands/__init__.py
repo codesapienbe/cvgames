@@ -1329,22 +1329,30 @@ class UltimateDoomGame:
         return achievements
     
     def detect_enhanced_gesture(self, landmarks, hand_label: str) -> Tuple[str, Optional[Vector2D]]:
-        """Enhanced gesture detection with position"""
+        """Enhanced gesture detection with position - using Duck Hunt's working approach"""
         if len(landmarks.landmark) < 21:
             return "unknown", None
         
-        # Get finger landmarks
+        # Get finger landmarks (same as Duck Hunt)
         thumb_tip = landmarks.landmark[4]
-        index_tip = landmarks.landmark[8]
-        middle_tip = landmarks.landmark[12]
-        ring_tip = landmarks.landmark[16]
-        pinky_tip = landmarks.landmark[20]
+        thumb_ip = landmarks.landmark[3]
+        thumb_mcp = landmarks.landmark[2]
         
-        thumb_pip = landmarks.landmark[3]
+        index_tip = landmarks.landmark[8]
         index_pip = landmarks.landmark[6]
+        index_mcp = landmarks.landmark[5]
+        
+        middle_tip = landmarks.landmark[12]
         middle_pip = landmarks.landmark[10]
+        middle_mcp = landmarks.landmark[9]
+        
+        ring_tip = landmarks.landmark[16]
         ring_pip = landmarks.landmark[14]
+        ring_mcp = landmarks.landmark[13]
+        
+        pinky_tip = landmarks.landmark[20]
         pinky_pip = landmarks.landmark[18]
+        pinky_mcp = landmarks.landmark[17]
         
         wrist = landmarks.landmark[0]
         
@@ -1352,27 +1360,43 @@ class UltimateDoomGame:
         wrist_pos = Vector2D(wrist.x * self.screen_width, wrist.y * self.screen_height)
         index_pos = Vector2D(index_tip.x * self.screen_width, index_tip.y * self.screen_height)
         
-        # Check finger states
-        index_extended = index_tip.y < index_pip.y
+        # SIMPLIFIED GESTURE DETECTION (from Duck Hunt)
+        
+        # 1. Check if index finger is extended (pointing)
+        index_extended = index_tip.y < index_pip.y < index_mcp.y
+        
+        # 2. Check if other fingers are closed (simplified)
+        middle_closed = middle_tip.y > middle_pip.y
+        ring_closed = ring_tip.y > ring_pip.y
+        pinky_closed = pinky_tip.y > pinky_pip.y
+        
+        # 3. SIMPLIFIED THUMB TRIGGER - just check if thumb is curled
+        # Thumb is "triggered" if it's curled (tip below IP joint)
+        thumb_triggered = thumb_tip.y > thumb_ip.y
+        
+        # 4. Gun gesture is valid if index extended and other fingers closed
+        gun_gesture_valid = index_extended and middle_closed and ring_closed and pinky_closed
+        
+        if gun_gesture_valid:
+            return "gun", index_pos
+        
+        # Additional gestures for Doom Hands
+        # Check finger states for other gestures
         middle_extended = middle_tip.y < middle_pip.y
         ring_extended = ring_tip.y < ring_pip.y
         pinky_extended = pinky_tip.y < pinky_pip.y
         
         # Thumb state (depends on hand orientation)
         if hand_label == "Right":
-            thumb_extended = thumb_tip.x > thumb_pip.x
+            thumb_extended = thumb_tip.x > thumb_ip.x
         else:
-            thumb_extended = thumb_tip.x < thumb_pip.x
+            thumb_extended = thumb_tip.x < thumb_ip.x
         
         # Gesture classification
         extended_fingers = sum([index_extended, middle_extended, ring_extended, pinky_extended, thumb_extended])
         
-        # Gun gesture (index only)
-        if index_extended and not middle_extended and not ring_extended and not pinky_extended:
-            return "gun", index_pos
-        
         # Open palm (all extended)
-        elif extended_fingers >= 4:
+        if extended_fingers >= 4:
             return "open_palm", wrist_pos
         
         # Fist (all closed)
@@ -1406,29 +1430,43 @@ class UltimateDoomGame:
         return distance < 0.15  # Threshold for hands being together
     
     def handle_gesture_input(self):
-        """Process hand gestures for game input"""
+        """Process hand gestures for game input - using Duck Hunt's approach"""
         if not self.left_hand and not self.right_hand:
             return
         
-        # Process each hand
-        left_gesture, left_pos = ("unknown", None)
-        right_gesture, right_pos = ("unknown", None)
+        # Process each hand with thumb trigger detection
+        left_gesture, left_pos, left_thumb_trigger = ("unknown", None, False)
+        right_gesture, right_pos, right_thumb_trigger = ("unknown", None, False)
         
         if self.left_hand:
             left_gesture, left_pos = self.detect_enhanced_gesture(self.left_hand, "Left")
+            # Check thumb trigger for left hand
+            if left_gesture == "gun":
+                thumb_tip = self.left_hand.landmark[4]
+                thumb_ip = self.left_hand.landmark[3]
+                left_thumb_trigger = thumb_tip.y > thumb_ip.y
         
         if self.right_hand:
             right_gesture, right_pos = self.detect_enhanced_gesture(self.right_hand, "Right")
+            # Check thumb trigger for right hand
+            if right_gesture == "gun":
+                thumb_tip = self.right_hand.landmark[4]
+                thumb_ip = self.right_hand.landmark[3]
+                right_thumb_trigger = thumb_tip.y > thumb_ip.y
         
         # Weapon handling (prefer right hand for shooting)
         if right_gesture == "gun" and right_pos:
             self.weapon_hand = self.right_hand
             self.crosshair_pos = right_pos
-            self.handle_shooting()
+            # Only shoot when thumb is triggered (like Duck Hunt)
+            if right_thumb_trigger:
+                self.handle_shooting()
         elif left_gesture == "gun" and left_pos:
             self.weapon_hand = self.left_hand
             self.crosshair_pos = left_pos
-            self.handle_shooting()
+            # Only shoot when thumb is triggered (like Duck Hunt)
+            if left_thumb_trigger:
+                self.handle_shooting()
         
         # Melee attacks
         if right_gesture == "fist" or left_gesture == "fist":
@@ -2241,12 +2279,21 @@ class UltimateDoomGame:
         cv2.putText(frame, right_status, (status_x, status_y + 50), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, right_color, 1)
         
-        # Weapon status
+        # Weapon status with thumb trigger info
         if self.weapon_hand:
-            weapon_status = "WEAPON: READY"
-            weapon_color = DoomColors.HUD_GREEN
+            # Check if thumb is triggered
+            thumb_tip = self.weapon_hand.landmark[4]
+            thumb_ip = self.weapon_hand.landmark[3]
+            thumb_triggered = thumb_tip.y > thumb_ip.y
+            
+            if thumb_triggered:
+                weapon_status = "WEAPON: FIRING!"
+                weapon_color = DoomColors.HUD_RED
+            else:
+                weapon_status = "WEAPON: READY - CURL THUMB TO SHOOT"
+                weapon_color = DoomColors.HUD_GREEN
         else:
-            weapon_status = "WEAPON: POINT FINGER TO AIM"
+            weapon_status = "WEAPON: POINT INDEX FINGER TO AIM"
             weapon_color = DoomColors.HUD_YELLOW
         
         cv2.putText(frame, weapon_status, (status_x, status_y + 80), 
@@ -2340,6 +2387,7 @@ def main():
                        choices=['easy', 'medium', 'hard', 'nightmare'],
                        help='Game difficulty level')
     parser.add_argument('--no-fps', action='store_true', help='Hide FPS counter')
+    parser.add_argument('--windowed', action='store_true', help='Run in windowed mode instead of fullscreen')
     args = parser.parse_args()
 
     # Initialize camera
@@ -2348,27 +2396,50 @@ def main():
         print(f"Error: Could not open camera with index {args.camera}")
         exit(-1)
 
+    # Get screen dimensions for fullscreen
+    screen_width = 1920  # Default fallback
+    screen_height = 1080  # Default fallback
+    
+    # Try to get actual screen dimensions
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        root.destroy()
+    except:
+        pass  # Use default dimensions if tkinter fails
+    
     # Set camera properties for optimal performance
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, screen_width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, screen_height)
     cap.set(cv2.CAP_PROP_FPS, 60)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-    # Initialize game with configuration
-    game = UltimateDoomGame(1280, 720)
+    
+    # Create window (fullscreen or windowed based on argument)
+    if args.windowed:
+        # Windowed mode
+        screen_width, screen_height = 1280, 720
+        cv2.namedWindow('Ultimate Doom - Hand Gesture Edition', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('Ultimate Doom - Hand Gesture Edition', screen_width, screen_height)
+    else:
+        # Fullscreen mode
+        cv2.namedWindow('Ultimate Doom - Hand Gesture Edition', cv2.WINDOW_FULLSCREEN)
+        cv2.setWindowProperty('Ultimate Doom - Hand Gesture Edition', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    
+    # Initialize game with final screen dimensions
+    game = UltimateDoomGame(screen_width, screen_height)
     game.config.difficulty = DifficultyLevel[args.difficulty.upper()]
     game.show_fps = not args.no_fps
-    
-    # Create window
-    cv2.namedWindow('Ultimate Doom - Hand Gesture Edition', cv2.WINDOW_NORMAL)
-    cv2.resizeWindow('Ultimate Doom - Hand Gesture Edition', 1280, 720)
 
     print("🔥 ULTIMATE DOOM - HAND GESTURE EDITION 🔥")
     print("=" * 60)
+    print(f"🖥️  Running in {'WINDOWED' if args.windowed else 'FULLSCREEN'} mode ({screen_width}x{screen_height})")
     print("👹 RIP AND TEAR WITH YOUR HANDS! 👹")
     print()
     print("🎮 GESTURE CONTROLS:")
-    print("   🎯 POINT INDEX FINGER → Aim and shoot")
+    print("   🎯 POINT INDEX FINGER → Aim")
+    print("   👍 CURL THUMB → Shoot (trigger)")
     print("   👊 MAKE FIST → Melee attacks")
     print("   🙏 HANDS TOGETHER → Reload weapon")
     print("   👍 THUMBS UP → Next weapon")
@@ -2376,6 +2447,13 @@ def main():
     print("   ✌️  PEACE SIGN → Switch weapons")
     print("   ✋ OPEN PALM → Movement (future)")
     print("   🔙 BACK BUTTON → Exit to app store")
+    print()
+    print("⌨️  KEYBOARD CONTROLS:")
+    print("   🎮 SPACE/ENTER → Start game / Confirm")
+    print("   ⏸️  P → Pause/Resume")
+    print("   🔄 R → Restart (when not playing)")
+    print("   🚪 Q/ESC → Quit game")
+    print("   🖥️  F → Toggle fullscreen (info only)")
     print()
     print("🎯 WEAPONS TO UNLOCK:")
     print("   • FIST & PISTOL → Available from start")
@@ -2400,7 +2478,7 @@ def main():
 
             # Mirror frame for natural interaction
             frame = cv2.flip(frame, 1)
-            frame = cv2.resize(frame, (1280, 720))
+            frame = cv2.resize(frame, (screen_width, screen_height))
 
             # Process hand tracking
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -2431,7 +2509,7 @@ def main():
             hand_pos = None
             if results.multi_hand_landmarks:
                 wrist = results.multi_hand_landmarks[0].landmark[0]
-                hand_pos = (int(wrist.x * 1280), int(wrist.y * 720))
+                hand_pos = (int(wrist.x * screen_width), int(wrist.y * screen_height))
             
             if game.back_button.handle_input(key, 
                                            results.multi_hand_landmarks[0] if results.multi_hand_landmarks else None, 
@@ -2470,6 +2548,11 @@ def main():
                     game.state = GameState.PLAYING
             elif key == ord('r') and game.state != GameState.PLAYING:  # Restart
                 game.start_new_game()
+            elif key == ord('f'):  # Toggle fullscreen
+                if args.windowed:
+                    print("⚠️  Fullscreen toggle not available in windowed mode. Use --fullscreen argument.")
+                else:
+                    print("🔄 Toggle fullscreen with 'F' key (not implemented in this version)")
 
             # Update game
             game.update()
