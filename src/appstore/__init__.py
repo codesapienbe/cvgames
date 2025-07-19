@@ -16,6 +16,29 @@ import time
 import numpy as np
 from pathlib import Path
 from typing import List, Tuple
+from enum import Enum
+
+# Import the loading state module
+try:
+    from .loading_state import LoadingState
+except ImportError:
+    # If loading_state doesn't exist yet, we'll create it
+    LoadingState = None
+
+class AppState(Enum):
+    """Application state enumeration"""
+    IDLE = "IDLE"                    # App store is idle, ready for interaction
+    GAME_SELECTING = "GAME_SELECTING"  # User is selecting a game (holding over card)
+    GAME_LOADING = "GAME_LOADING"      # Game is loading/launching (no interaction allowed)
+    GAME_START = "GAME_START"          # Game is starting/initializing
+    GAME_RUNNING = "GAME_RUNNING"      # Game is currently running
+    GAME_STOP = "GAME_STOP"            # Game is being stopped/terminated
+    GAME_RETURNING = "GAME_RETURNING"  # Returning from game to app store
+    STORE_START = "STORE_START"        # App store is starting/initializing
+    STORE_STOP = "STORE_STOP"          # App store is shutting down
+    PAUSED = "PAUSED"                 # Interaction is paused
+    ERROR = "ERROR"                   # Error state
+    SHUTTING_DOWN = "SHUTTING_DOWN"   # App is shutting down
 
 def check_dependencies():
     """Check if required dependencies are installed"""
@@ -119,6 +142,12 @@ class AppStore:
         self.tutorial_timer = 0
         self.tutorial_duration = 5.0  # Show tutorial for 5 seconds
         
+        # Swipe hold tracking
+        self.swipe_hold_start_time = 0
+        self.swipe_hold_position = (0, 0)
+        self.swipe_hold_progress = 0.0
+        self.swipe_hold_direction = ""
+        
         # Loading and game state
         self.loading_game = None  # Currently loading game
         self.loading_progress = 0.0  # Loading progress (0.0 to 1.0)
@@ -135,7 +164,7 @@ class AppStore:
         self.card_width = 280  # Smaller cards to fit 5 in a row
         self.card_height = 380
         self.card_margin = 40
-        self.zoom_factor = 1.15
+        self.zoom_factor = 2.0  # Much larger zoom for clear visual feedback
         self.selection_time = 5.0  # Hold hand over card for 5 seconds to select
         
         # Info modal state
@@ -163,8 +192,29 @@ class AppStore:
         # Thread safety
         self.game_lock = threading.Lock()
         
+        # Shutdown flag
+        self.shutting_down = False
+        
+        # State machine management
+        self.current_state = AppState.STORE_START
+        self.state_lock = threading.Lock()
+        self.state_change_time = time.time()
+        self.state_duration = 0.0
+        
+        # State-specific data
+        self.selected_game = None
+        self.state_message = ""
+        
+        # Loading state management
+        self.loading_state = None
+        if LoadingState:
+            self.loading_state = LoadingState(self.screen_width, self.screen_height)
+        
         # Load all games
         self.load_games()
+        
+        # Transition to IDLE when ready
+        self.set_state(AppState.IDLE, "App store ready")
     
 
         
@@ -179,7 +229,7 @@ class AppStore:
         all_dirs = [d for d in src_path.iterdir() if d.is_dir()]
         print(f"📁 Found directories: {[d.name for d in all_dirs]}")
         
-        game_dirs = [d for d in src_path.iterdir() if d.is_dir() and d.name not in ['appstore', 'cvstore', '__pycache__']]
+        game_dirs = [d for d in src_path.iterdir() if d.is_dir() and d.name not in ['appstore', 'cvstore', 'loading_state', '__pycache__']]
         print(f"🎮 Game directories found: {[d.name for d in game_dirs]}")
         
         for game_dir in game_dirs:
@@ -258,6 +308,50 @@ class AppStore:
                 continue
         
         print(f"🎯 Loaded {len(self.games)} games total")
+    
+    def set_state(self, new_state: AppState, message: str = ""):
+        """Thread-safe state change with logging"""
+        with self.state_lock:
+            old_state = self.current_state
+            self.current_state = new_state
+            self.state_change_time = time.time()
+            self.state_duration = 0.0
+            self.state_message = message
+            
+            # Calculate duration of previous state
+            if hasattr(self, '_last_state_change'):
+                duration = time.time() - self._last_state_change
+                print(f"🔄 State change: {old_state.value} → {new_state.value} (duration: {duration:.1f}s) - {message}")
+            else:
+                print(f"🔄 State change: {old_state.value} → {new_state.value} - {message}")
+            
+            self._last_state_change = time.time()
+    
+    def get_state(self) -> AppState:
+        """Thread-safe state retrieval"""
+        with self.state_lock:
+            return self.current_state
+    
+    def get_state_info(self) -> Tuple[AppState, str, float]:
+        """Thread-safe state info retrieval"""
+        with self.state_lock:
+            duration = time.time() - self.state_change_time
+            return self.current_state, self.state_message, duration
+    
+    def is_state(self, state: AppState) -> bool:
+        """Check if current state matches"""
+        return self.get_state() == state
+    
+    def can_interact(self) -> bool:
+        """Check if user can interact based on current state"""
+        state = self.get_state()
+        # Only allow interaction in these states
+        return state in [AppState.IDLE, AppState.GAME_SELECTING, AppState.PAUSED]
+    
+    def update_state_duration(self):
+        """Update state duration for display"""
+        with self.state_lock:
+            self.state_duration = time.time() - self.state_change_time
     
     def detect_hands_raised(self, hand_landmarks) -> bool:
         """Detect if both hands are raised (palm facing camera)"""
@@ -369,15 +463,47 @@ class AppStore:
         return distance < pinch_threshold and thumb_open and ring_open and pinky_open
     
     def get_hand_position(self, landmarks) -> Tuple[int, int]:
-        """Get hand position in screen coordinates"""
+        """Get hand position in screen coordinates - use index finger tip"""
         if len(landmarks.landmark) < 21:
             return (0, 0)
         
-        # Use palm center (landmark 9 - middle finger base)
+        # Use index finger tip (landmark 8) instead of palm center
         # Scale from processing frame (640x480) to screen coordinates (1920x1080)
-        x = int(landmarks.landmark[9].x * self.screen_width)
-        y = int(landmarks.landmark[9].y * self.screen_height)
+        x = int(landmarks.landmark[8].x * self.screen_width)
+        y = int(landmarks.landmark[8].y * self.screen_height)
         return (x, y)
+    
+    def get_primary_hand_position(self, hand_landmarks_list) -> Tuple[int, int]:
+        """Get position from the primary hand (right hand if both raised, otherwise the raised hand)"""
+        if not hand_landmarks_list:
+            return (0, 0)
+        
+        # If only one hand, use it
+        if len(hand_landmarks_list) == 1:
+            return self.get_hand_position(hand_landmarks_list[0])
+        
+        # If both hands are raised, prioritize the right hand (hand with higher x coordinate)
+        # In mirrored view, right hand appears on the left side of the screen
+        right_hand = None
+        left_hand = None
+        
+        for landmarks in hand_landmarks_list:
+            # Check if hand is raised (palm facing camera)
+            if self.detect_hands_raised([landmarks]):
+                # In mirrored view, right hand has lower x coordinate
+                if right_hand is None or landmarks.landmark[8].x < right_hand.landmark[8].x:
+                    right_hand = landmarks
+                if left_hand is None or landmarks.landmark[8].x > left_hand.landmark[8].x:
+                    left_hand = landmarks
+        
+        # Return right hand position if available, otherwise left hand
+        if right_hand:
+            return self.get_hand_position(right_hand)
+        elif left_hand:
+            return self.get_hand_position(left_hand)
+        else:
+            # If no hands are raised, use the first hand
+            return self.get_hand_position(hand_landmarks_list[0])
     
     def update_smooth_hand_position(self, current_pos: Tuple[int, int]):
         """Update smooth hand position with velocity-based smoothing"""
@@ -402,37 +528,66 @@ class AppStore:
             self.hand_positions.pop(0)
     
     def detect_swipe_gesture(self) -> str:
-        """Detect swipe gestures for navigation"""
-        if len(self.hand_positions) < 5:
+        """Detect swipe gestures for navigation - requires 5-second hold at screen edges"""
+        if len(self.hand_positions) < 2:
             return ""
         
         current_time = time.time()
         if current_time - self.last_swipe_time < self.swipe_cooldown:
             return ""
         
-        # Calculate swipe direction
-        start_pos = self.hand_positions[0]
-        end_pos = self.hand_positions[-1]
+        # Get the current hand position (most recent)
+        current_pos = self.hand_positions[-1]
+        edge_threshold = 100  # Pixels from edge
         
-        dx = end_pos[0] - start_pos[0]
-        dy = end_pos[1] - start_pos[1]
-        
-        # Check if swipe distance is sufficient
-        distance = (dx**2 + dy**2)**0.5
-        if distance < self.swipe_threshold:
-            return ""
-        
-        # Determine swipe direction - prioritize horizontal swipes
-        if abs(dx) > abs(dy) * 1.5:  # Horizontal swipe (more horizontal than vertical)
-            if dx > 0:
-                return "right"
-            else:
+        # Check if hand is at left edge
+        if current_pos[0] < edge_threshold:
+            # Start or continue left swipe hold
+            if self.swipe_hold_direction != "left":
+                self.swipe_hold_start_time = current_time
+                self.swipe_hold_position = current_pos
+                self.swipe_hold_direction = "left"
+                self.swipe_hold_progress = 0.0
+                print("🔄 Started left swipe hold")
+            
+            # Calculate hold progress
+            elapsed_time = current_time - self.swipe_hold_start_time
+            self.swipe_hold_progress = min(elapsed_time / self.selection_time, 1.0)
+            
+            # Check if hold is complete
+            if self.swipe_hold_progress >= 1.0:
+                self.swipe_hold_start_time = 0
+                self.swipe_hold_progress = 0.0
+                self.swipe_hold_direction = ""
                 return "left"
-        elif abs(dy) > abs(dx) * 1.5:  # Vertical swipe (more vertical than horizontal)
-            if dy > 0:
-                return "down"
-            else:
-                return "up"
+        
+        # Check if hand is at right edge
+        elif current_pos[0] > self.screen_width - edge_threshold:
+            # Start or continue right swipe hold
+            if self.swipe_hold_direction != "right":
+                self.swipe_hold_start_time = current_time
+                self.swipe_hold_position = current_pos
+                self.swipe_hold_direction = "right"
+                self.swipe_hold_progress = 0.0
+                print("🔄 Started right swipe hold")
+            
+            # Calculate hold progress
+            elapsed_time = current_time - self.swipe_hold_start_time
+            self.swipe_hold_progress = min(elapsed_time / self.selection_time, 1.0)
+            
+            # Check if hold is complete
+            if self.swipe_hold_progress >= 1.0:
+                self.swipe_hold_start_time = 0
+                self.swipe_hold_progress = 0.0
+                self.swipe_hold_direction = ""
+                return "right"
+        
+        else:
+            # Reset swipe hold if not at edges
+            if self.swipe_hold_start_time > 0:
+                self.swipe_hold_start_time = 0
+                self.swipe_hold_progress = 0.0
+                self.swipe_hold_direction = ""
         
         return ""
     
@@ -494,8 +649,9 @@ class AppStore:
             cv2.rectangle(frame, (x-3, y-3), (x + width+3, y + height+3), glow_color, 6)
         
         # 2. Main card background with transparency effect
-        if self.games_disabled:
-            bg_color = (50, 50, 50)  # Grayed out when disabled
+        current_state = self.get_state()
+        if current_state in [AppState.GAME_LOADING, AppState.GAME_START, AppState.GAME_RUNNING, AppState.GAME_STOP, AppState.GAME_RETURNING]:
+            bg_color = (50, 50, 50)  # Grayed out when game is active
         elif card.is_selected:
             bg_color = self.colors['card_ready'][:3]  # Remove alpha for OpenCV
         elif card.is_hovered:
@@ -520,7 +676,7 @@ class AppStore:
         cv2.addWeighted(frame, 0.1, frame, 0.9, 0, frame)
         
         # 5. Rounded corners effect (simulated with small rectangles)
-        corner_size = 15
+        corner_size = int(15 * zoom)
         corner_color = bg_color
         # Top-left corner
         cv2.rectangle(frame, (x, y), (x + corner_size, y + corner_size), corner_color, -1)
@@ -532,9 +688,9 @@ class AppStore:
         cv2.rectangle(frame, (x + width - corner_size, y + height - corner_size), (x + width, y + height), corner_color, -1)
         
         # Game icon with glassmorphic effect
-        icon_size = min(100, width // 3)
+        icon_size = int(min(100, width // 3) * zoom)
         icon_x = x + (width - icon_size) // 2
-        icon_y = y + 30
+        icon_y = y + int(30 * zoom)
         
         # Icon background with single layer for better performance
         overlay = frame.copy()
@@ -549,10 +705,11 @@ class AppStore:
         # Icon content (game controller symbol)
         controller_x = icon_x + icon_size // 2
         controller_y = icon_y + icon_size // 2
-        cv2.circle(frame, (controller_x, controller_y), 15, self.colors['text_primary'], 2)
-        cv2.circle(frame, (controller_x - 8, controller_y - 8), 3, self.colors['success'], -1)
-        cv2.circle(frame, (controller_x + 8, controller_y - 8), 3, self.colors['warning'], -1)
-        cv2.circle(frame, (controller_x, controller_y + 8), 3, self.colors['accent'], -1)
+        controller_radius = int(15 * zoom)
+        cv2.circle(frame, (controller_x, controller_y), controller_radius, self.colors['text_primary'], 2)
+        cv2.circle(frame, (controller_x - int(8 * zoom), controller_y - int(8 * zoom)), int(3 * zoom), self.colors['success'], -1)
+        cv2.circle(frame, (controller_x + int(8 * zoom), controller_y - int(8 * zoom)), int(3 * zoom), self.colors['warning'], -1)
+        cv2.circle(frame, (controller_x, controller_y + int(8 * zoom)), int(3 * zoom), self.colors['accent'], -1)
         
         # Game name with glassmorphic text effect
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -566,7 +723,7 @@ class AppStore:
         for word in words:
             test_line = current_line + " " + word if current_line else word
             (text_width, _), _ = cv2.getTextSize(test_line, font, font_scale, thickness)
-            if text_width <= width - 30:
+            if text_width <= width - int(30 * zoom):
                 current_line = test_line
             else:
                 if current_line:
@@ -576,78 +733,150 @@ class AppStore:
             lines.append(current_line)
         
         # Draw text lines with shadow effect
-        text_y = icon_y + icon_size + 40
+        text_y = icon_y + icon_size + int(40 * zoom)
+        line_height = int(35 * zoom)
         for i, line in enumerate(lines):
-            if text_y + i * 35 > y + height - 100:  # Leave space for description
+            if text_y + i * line_height > y + height - int(100 * zoom):  # Leave space for description
                 break
             (text_width, text_height), _ = cv2.getTextSize(line, font, font_scale, thickness)
             text_x = x + (width - text_width) // 2
             
             # Text shadow
-            cv2.putText(frame, line, (text_x + 2, text_y + i * 35 + 2), font, font_scale, 
+            cv2.putText(frame, line, (text_x + 2, text_y + i * line_height + 2), font, font_scale, 
                        (0, 0, 0), thickness + 1)
             # Main text
-            cv2.putText(frame, line, (text_x, text_y + i * 35), font, font_scale, 
+            cv2.putText(frame, line, (text_x, text_y + i * line_height), font, font_scale, 
                        self.colors['text_primary'], thickness)
         
         # Game description with glassmorphic effect
         desc = card.description[:60] + "..." if len(card.description) > 60 else card.description
-        desc_y = y + height - 60
-        (desc_width, desc_height), _ = cv2.getTextSize(desc, font, 0.5, 1)
+        desc_y = y + height - int(60 * zoom)
+        desc_font_scale = 0.5 * zoom
+        desc_thickness = 1 if zoom <= 1.0 else 2
+        (desc_width, desc_height), _ = cv2.getTextSize(desc, font, desc_font_scale, desc_thickness)
         desc_x = x + (width - desc_width) // 2
         
         # Description background
-        desc_bg_y = desc_y - 15
-        cv2.rectangle(frame, (desc_x - 10, desc_bg_y), (desc_x + desc_width + 10, desc_y + 10), 
+        desc_bg_y = desc_y - int(15 * zoom)
+        cv2.rectangle(frame, (desc_x - int(10 * zoom), desc_bg_y), (desc_x + desc_width + int(10 * zoom), desc_y + int(10 * zoom)), 
                      self.colors['card_bg'][:3], -1)
         cv2.addWeighted(frame, 0.3, frame, 0.7, 0, frame)
         
         # Description text
-        cv2.putText(frame, desc, (desc_x, desc_y), font, 0.5, self.colors['text_secondary'], 1)
+        cv2.putText(frame, desc, (desc_x, desc_y), font, desc_font_scale, self.colors['text_secondary'], desc_thickness)
         
-                # Selection indicator for simultaneous gesture
-        if card.is_hovered and not self.games_disabled:
+        # Selection indicator for simultaneous gesture
+        if card.is_hovered and self.can_interact():
             center_x = x + width // 2
             center_y = y + height // 2
             
-            # Draw "PINCH TO CLICK" indicator
-            indicator_text = "PINCH TO CLICK"
-            (text_width, text_height), _ = cv2.getTextSize(indicator_text, font, 0.5, 1)
+            # Draw selection progress bar
+            progress_bar_width = width - int(40 * zoom)
+            progress_bar_height = int(8 * zoom)
+            progress_bar_x = x + int(20 * zoom)
+            progress_bar_y = y + height - int(30 * zoom)
+            
+            # Progress bar background
+            cv2.rectangle(frame, (progress_bar_x, progress_bar_y), 
+                         (progress_bar_x + progress_bar_width, progress_bar_y + progress_bar_height), 
+                         (50, 50, 50), -1)
+            cv2.rectangle(frame, (progress_bar_x, progress_bar_y), 
+                         (progress_bar_x + progress_bar_width, progress_bar_y + progress_bar_height), 
+                         (255, 255, 255), 1)
+            
+            # Progress bar fill
+            fill_width = int(progress_bar_width * card.selection_progress)
+            if fill_width > 0:
+                # Color changes from yellow to green as progress increases
+                if card.selection_progress < 0.5:
+                    progress_color = (0, 255, 255)  # Yellow
+                elif card.selection_progress < 0.8:
+                    progress_color = (0, 200, 255)  # Orange
+                else:
+                    progress_color = (0, 255, 0)  # Green
+                
+                cv2.rectangle(frame, (progress_bar_x, progress_bar_y), 
+                             (progress_bar_x + fill_width, progress_bar_y + progress_bar_height), 
+                             progress_color, -1)
+            
+            # Selection status text
+            if card.selection_progress < 0.3:
+                status_text = "HOLD TO SELECT"
+                status_color = (255, 255, 255)
+            elif card.selection_progress < 0.7:
+                status_text = "SELECTING..."
+                status_color = (255, 255, 0)
+            elif card.selection_progress < 1.0:
+                status_text = "ALMOST READY!"
+                status_color = (0, 255, 0)
+            else:
+                status_text = "LAUNCHING!"
+                status_color = (0, 255, 0)
+            
+            # Status text background
+            status_font_scale = 0.6 * zoom
+            status_thickness = 1 if zoom <= 1.0 else 2
+            (text_width, text_height), _ = cv2.getTextSize(status_text, font, status_font_scale, status_thickness)
             text_x = center_x - text_width // 2
-            text_y = center_y + 50
+            text_y = progress_bar_y - int(10 * zoom)
             
-            # Indicator background
-            cv2.rectangle(frame, (text_x - 15, text_y - 15), (text_x + text_width + 15, text_y + 15), 
-                         self.colors['accent'][:3], -1)
-            cv2.addWeighted(frame, 0.4, frame, 0.6, 0, frame)
+            # Status background
+            cv2.rectangle(frame, (text_x - int(10 * zoom), text_y - int(20 * zoom)), (text_x + text_width + int(10 * zoom), text_y + int(5 * zoom)), 
+                         (0, 0, 0), -1)
+            cv2.addWeighted(frame, 0.3, frame, 0.7, 0, frame)
             
-            # Indicator text
-            cv2.putText(frame, indicator_text, (text_x, text_y), font, 0.5, self.colors['text_primary'], 1)
+            # Status text
+            cv2.putText(frame, status_text, (text_x, text_y), font, status_font_scale, status_color, status_thickness)
             
-            # Draw pinch gesture icon
-            hand_x = center_x
-            hand_y = center_y - 20
-            cv2.circle(frame, (hand_x, hand_y), 12, self.colors['text_primary'], 2)
-            # Index and middle finger tips (pinched)
-            cv2.circle(frame, (hand_x - 3, hand_y - 3), 3, (100, 255, 100), -1)  # Index (green)
-            cv2.circle(frame, (hand_x + 3, hand_y - 3), 3, (100, 100, 255), -1)  # Middle (blue)
-        elif card.is_hovered and self.games_disabled:
+            # Time remaining indicator
+            if card.selection_progress < 1.0:
+                remaining_time = self.selection_time - (time.time() - card.hover_start_time)
+                if remaining_time > 0:
+                    time_text = f"{remaining_time:.1f}s"
+                    time_font_scale = 0.5 * zoom
+                    time_thickness = 1 if zoom <= 1.0 else 2
+                    (time_width, time_height), _ = cv2.getTextSize(time_text, font, time_font_scale, time_thickness)
+                    time_x = center_x - time_width // 2
+                    time_y = text_y - int(25 * zoom)
+                    
+                    # Time background
+                    cv2.rectangle(frame, (time_x - int(5 * zoom), time_y - int(15 * zoom)), (time_x + time_width + int(5 * zoom), time_y + int(5 * zoom)), 
+                                 (0, 0, 0), -1)
+                    cv2.addWeighted(frame, 0.3, frame, 0.7, 0, frame)
+                    
+                    # Time text
+                    cv2.putText(frame, time_text, (time_x, time_y), font, time_font_scale, (200, 200, 200), time_thickness)
+            
+            # Draw selection ring around card
+            ring_color = (0, 255, 255) if card.selection_progress < 0.5 else (0, 255, 0)
+            ring_thickness = int(3 + 2 * card.selection_progress)
+            cv2.rectangle(frame, (x - ring_thickness, y - ring_thickness), 
+                         (x + width + ring_thickness, y + height + ring_thickness), 
+                         ring_color, ring_thickness)
+            
+            # Pulse effect for selection
+            pulse_radius = int(30 + 10 * abs(np.sin(self.animation_time * 6)))
+            cv2.circle(frame, (center_x, center_y), pulse_radius, ring_color, 2)
+            
+        elif card.is_hovered and not self.can_interact():
             center_x = x + width // 2
             center_y = y + height // 2
             
             # Draw "GAMES DISABLED" indicator
             indicator_text = "GAMES DISABLED"
-            (text_width, text_height), _ = cv2.getTextSize(indicator_text, font, 0.5, 1)
+            indicator_font_scale = 0.5 * zoom
+            indicator_thickness = 1 if zoom <= 1.0 else 2
+            (text_width, text_height), _ = cv2.getTextSize(indicator_text, font, indicator_font_scale, indicator_thickness)
             text_x = center_x - text_width // 2
-            text_y = center_y + 50
+            text_y = center_y + int(50 * zoom)
             
             # Indicator background (red for disabled)
-            cv2.rectangle(frame, (text_x - 15, text_y - 15), (text_x + text_width + 15, text_y + 15), 
+            cv2.rectangle(frame, (text_x - int(15 * zoom), text_y - int(15 * zoom)), (text_x + text_width + int(15 * zoom), text_y + int(15 * zoom)), 
                          (100, 50, 50), -1)
             cv2.addWeighted(frame, 0.4, frame, 0.6, 0, frame)
             
             # Indicator text
-            cv2.putText(frame, indicator_text, (text_x, text_y), font, 0.5, (255, 200, 200), 1)
+            cv2.putText(frame, indicator_text, (text_x, text_y), font, indicator_font_scale, (255, 200, 200), indicator_thickness)
     
     def draw_info_modal(self, frame):
         """Draw the glassmorphic info modal with usage instructions"""
@@ -750,22 +979,30 @@ class AppStore:
                    font_small, 0.6, (150, 150, 150), 1)
     
     def draw_visual_cursor(self, frame, hand_x: int, hand_y: int):
-        """Draw a smooth visual cursor at hand position"""
+        """Draw a highly visible cursor at hand position"""
         if hand_x == 0 and hand_y == 0:
             return
         
-        # Outer ring
-        cv2.circle(frame, (hand_x, hand_y), 20, self.colors['accent'][:3], 2)
+        # Make cursor much more visible with multiple layers
+        # Outer glow ring (larger, more visible)
+        cv2.circle(frame, (hand_x, hand_y), 25, (255, 255, 255), 3)  # White outer ring
         
-        # Inner circle
-        cv2.circle(frame, (hand_x, hand_y), 8, self.colors['text_primary'], -1)
+        # Main cursor ring (accent color)
+        cv2.circle(frame, (hand_x, hand_y), 20, self.colors['accent'][:3], 4)
         
-        # Center dot
-        cv2.circle(frame, (hand_x, hand_y), 3, self.colors['background'], -1)
+        # Inner circle (white)
+        cv2.circle(frame, (hand_x, hand_y), 12, (255, 255, 255), -1)
         
-        # Pulse effect
-        pulse_radius = int(15 + 5 * abs(np.sin(self.animation_time * 3)))
-        cv2.circle(frame, (hand_x, hand_y), pulse_radius, self.colors['accent'][:3], 1)
+        # Center dot (accent color)
+        cv2.circle(frame, (hand_x, hand_y), 6, self.colors['accent'][:3], -1)
+        
+        # Crosshair lines for better precision
+        cv2.line(frame, (hand_x - 15, hand_y), (hand_x + 15, hand_y), (255, 255, 255), 2)
+        cv2.line(frame, (hand_x, hand_y - 15), (hand_x, hand_y + 15), (255, 255, 255), 2)
+        
+        # Pulse effect (more visible)
+        pulse_radius = int(20 + 8 * abs(np.sin(self.animation_time * 4)))
+        cv2.circle(frame, (hand_x, hand_y), pulse_radius, self.colors['accent'][:3], 2)
     
     def draw_hand_trail(self, frame, positions: List[Tuple[int, int]]):
         """Draw a fading trail behind the hand"""
@@ -779,8 +1016,14 @@ class AppStore:
             cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
     
     def draw_info_button(self, frame):
-        """Draw the glassmorphic info button in the bottom left"""
+        """Draw the glassmorphic info button in the bottom left with hold progress feedback"""
         x, y, w, h = self.info_button_rect
+        
+        # Get hold progress for info button
+        hold_progress = 0.0
+        if hasattr(self, 'info_button_hold_start') and self.info_button_hold_start > 0:
+            elapsed_time = time.time() - self.info_button_hold_start
+            hold_progress = min(elapsed_time / self.selection_time, 1.0)
         
         # Glassmorphic button background
         for i in range(2):
@@ -789,26 +1032,68 @@ class AppStore:
             cv2.rectangle(overlay, (x, y), (x + w, y + h), self.colors['accent'][:3], -1)
             cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
         
-        # Button border
-        cv2.rectangle(frame, (x, y), (x + w, y + h), self.colors['text_primary'], 2)
+        # Button border with progress color
+        border_color = self.colors['text_primary']
+        if hold_progress > 0:
+            # Change border color based on progress
+            if hold_progress < 0.5:
+                border_color = (0, 255, 255)  # Yellow
+            elif hold_progress < 0.8:
+                border_color = (0, 200, 255)  # Orange
+            else:
+                border_color = (0, 255, 0)  # Green
+        cv2.rectangle(frame, (x, y), (x + w, y + h), border_color, 2)
         
         # Info icon (question mark) with shadow
         cv2.putText(frame, "?", (x + 22, y + 42), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 0), 3)
         cv2.putText(frame, "?", (x + 20, y + 40), cv2.FONT_HERSHEY_SIMPLEX, 1.5, self.colors['text_primary'], 2)
         
-        # Label with background
-        label_text = "INFO"
-        (label_width, label_height), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-        label_x = x + (w - label_width) // 2
-        label_y = y + h + 25
-        
-        # Label background
-        cv2.rectangle(frame, (label_x - 5, label_y - 15), (label_x + label_width + 5, label_y + 5), 
-                     self.colors['card_bg'][:3], -1)
-        cv2.addWeighted(frame, 0.3, frame, 0.7, 0, frame)
-        
-        # Label text
-        cv2.putText(frame, label_text, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.colors['text_secondary'], 1)
+        # Hold progress indicator
+        if hold_progress > 0:
+            # Progress ring around button
+            center_x = x + w // 2
+            center_y = y + h // 2
+            ring_radius = int(w // 2 + 10)
+            ring_thickness = int(3 + 2 * hold_progress)
+            ring_color = border_color
+            cv2.circle(frame, (center_x, center_y), ring_radius, ring_color, ring_thickness)
+            
+            # Progress text
+            if hold_progress < 0.3:
+                progress_text = "HOLD"
+            elif hold_progress < 0.7:
+                progress_text = "HOLDING..."
+            elif hold_progress < 1.0:
+                progress_text = "ALMOST..."
+            else:
+                progress_text = "READY!"
+            
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            (text_width, text_height), _ = cv2.getTextSize(progress_text, font, 0.5, 1)
+            text_x = center_x - text_width // 2
+            text_y = y + h + 25
+            
+            # Text background
+            cv2.rectangle(frame, (text_x - 5, text_y - 15), (text_x + text_width + 5, text_y + 5), 
+                         (0, 0, 0), -1)
+            cv2.addWeighted(frame, 0.3, frame, 0.7, 0, frame)
+            
+            # Text
+            cv2.putText(frame, progress_text, (text_x, text_y), font, 0.5, border_color, 1)
+        else:
+            # Default label
+            label_text = "HOLD 5s"
+            (label_width, label_height), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+            label_x = x + (w - label_width) // 2
+            label_y = y + h + 25
+            
+            # Label background
+            cv2.rectangle(frame, (label_x - 5, label_y - 15), (label_x + label_width + 5, label_y + 5), 
+                         self.colors['card_bg'][:3], -1)
+            cv2.addWeighted(frame, 0.3, frame, 0.7, 0, frame)
+            
+            # Label text
+            cv2.putText(frame, label_text, (label_x, label_y), cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.colors['text_secondary'], 1)
     
     def draw_navigation_arrow(self, frame, direction: str, center: Tuple[int, int]):
         """Draw a glassmorphic navigation arrow"""
@@ -844,8 +1129,17 @@ class AppStore:
         cv2.circle(frame, (x, y), pulse_radius, self.colors['accent'][:3], 1)
     
     def draw_navigation_button(self, frame, direction: str, rect: Tuple[int, int, int, int]):
-        """Draw a clickable navigation button"""
+        """Draw a clickable navigation button with hold progress feedback"""
         x, y, w, h = rect
+        
+        # Get hold progress for this button
+        hold_progress = 0.0
+        if direction == "left" and hasattr(self, 'left_nav_hold_start') and self.left_nav_hold_start > 0:
+            elapsed_time = time.time() - self.left_nav_hold_start
+            hold_progress = min(elapsed_time / self.selection_time, 1.0)
+        elif direction == "right" and hasattr(self, 'right_nav_hold_start') and self.right_nav_hold_start > 0:
+            elapsed_time = time.time() - self.right_nav_hold_start
+            hold_progress = min(elapsed_time / self.selection_time, 1.0)
         
         # Button background with single layer for better performance
         overlay = frame.copy()
@@ -853,7 +1147,16 @@ class AppStore:
         cv2.addWeighted(overlay, 0.2, frame, 0.8, 0, frame)
         
         # Button border
-        cv2.rectangle(frame, (x, y), (x + w, y + h), self.colors['text_primary'], 2)
+        border_color = self.colors['text_primary']
+        if hold_progress > 0:
+            # Change border color based on progress
+            if hold_progress < 0.5:
+                border_color = (0, 255, 255)  # Yellow
+            elif hold_progress < 0.8:
+                border_color = (0, 200, 255)  # Orange
+            else:
+                border_color = (0, 255, 0)  # Green
+        cv2.rectangle(frame, (x, y), (x + w, y + h), border_color, 2)
         
         # Draw arrow based on direction
         center_x = x + w // 2
@@ -876,14 +1179,45 @@ class AppStore:
         pulse_radius = int(w // 2 + 5 * abs(np.sin(self.animation_time * 2)))
         cv2.circle(frame, (center_x, center_y), pulse_radius, self.colors['accent'][:3], 1)
         
-        # Click instruction text
-        text = "CLICK"
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        (text_width, text_height), _ = cv2.getTextSize(text, font, 0.5, 1)
-        text_x = center_x - text_width // 2
-        text_y = y + h + 20
-        
-        cv2.putText(frame, text, (text_x, text_y), font, 0.5, self.colors['text_secondary'], 1)
+        # Hold progress indicator
+        if hold_progress > 0:
+            # Progress ring around button
+            ring_radius = int(w // 2 + 10)
+            ring_thickness = int(3 + 2 * hold_progress)
+            ring_color = border_color
+            cv2.circle(frame, (center_x, center_y), ring_radius, ring_color, ring_thickness)
+            
+            # Progress text
+            if hold_progress < 0.3:
+                progress_text = "HOLD"
+            elif hold_progress < 0.7:
+                progress_text = "HOLDING..."
+            elif hold_progress < 1.0:
+                progress_text = "ALMOST..."
+            else:
+                progress_text = "READY!"
+            
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            (text_width, text_height), _ = cv2.getTextSize(progress_text, font, 0.5, 1)
+            text_x = center_x - text_width // 2
+            text_y = y + h + 20
+            
+            # Text background
+            cv2.rectangle(frame, (text_x - 5, text_y - 15), (text_x + text_width + 5, text_y + 5), 
+                         (0, 0, 0), -1)
+            cv2.addWeighted(frame, 0.3, frame, 0.7, 0, frame)
+            
+            # Text
+            cv2.putText(frame, progress_text, (text_x, text_y), font, 0.5, border_color, 1)
+        else:
+            # Default instruction text
+            text = "HOLD 5s"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            (text_width, text_height), _ = cv2.getTextSize(text, font, 0.5, 1)
+            text_x = center_x - text_width // 2
+            text_y = y + h + 20
+            
+            cv2.putText(frame, text, (text_x, text_y), font, 0.5, self.colors['text_secondary'], 1)
     
     def draw_slide_indicator(self, frame, direction: str):
         """Draw a slide gesture indicator"""
@@ -1134,57 +1468,111 @@ class AppStore:
         
         # Tutorial content
         tutorial_text = [
-            "CLICK GESTURES",
+            "HAND GESTURE CONTROLS",
             "",
-            "Pinch your INDEX and MIDDLE fingers together to click",
-            "Keep other fingers (thumb, ring, pinky) extended",
+            "🎯 CURSOR POSITION:",
+            "• Cursor follows your INDEX finger tip",
+            "• Right hand is prioritized when both hands are raised",
+            "• Single hand: uses that hand's index finger",
             "",
-            "Click on game cards to launch them",
-            "Click on left/right buttons to navigate pages",
-            "Click on INFO button for this tutorial",
+            "🎮 GAME SELECTION:",
+            "• HOLD your hand over a game card for 5 seconds",
+            "• Watch the progress bar fill up to completion",
+            "• Keep your hand steady until selection is complete",
+            "• The game will launch automatically when ready",
             "",
-            "Click anywhere to close this tutorial",
+            "⬅️➡️ NAVIGATION:",
+            "• HOLD your hand over LEFT/RIGHT navigation buttons for 5 seconds",
+            "• Watch for progress feedback on the buttons",
+            "• Keep your hand steady until navigation completes",
+            "",
+            "🔄 SWIPE GESTURE:",
+            "• HOLD your hand at the LEFT EDGE of screen for 5 seconds to swipe left",
+            "• HOLD your hand at the RIGHT EDGE of screen for 5 seconds to swipe right",
+            "• Watch for progress feedback at the screen edges",
+            "",
+            "ℹ️ INFO BUTTON:",
+            "• HOLD your hand over the INFO button for 5 seconds",
+            "• This will open the tutorial (this screen)",
+            "",
+            "⏸️ PAUSE/RESUME:",
+            "• Both hands raised + closed fists = pause interaction",
+            "• Both hands raised + open palms = resume interaction",
+            "",
+            "HOLD anywhere on this screen for 5 seconds to close tutorial",
             "",
             f"Tutorial will close in {max(0, int(self.tutorial_duration - self.tutorial_timer))} seconds"
         ]
         
         # Draw tutorial text
-        y_start = self.screen_height // 2 - 150
+        y_start = self.screen_height // 2 - 200
         for i, text in enumerate(tutorial_text):
-            y = y_start + i * 40
-            if text == "SLIDE GESTURES":
-                # Title
-                cv2.putText(frame, text, (self.screen_width // 2 - 150, y), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1.2, self.colors['accent'][:3], 3)
-                cv2.putText(frame, text, (self.screen_width // 2 - 150, y), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1.2, self.colors['text_primary'], 2)
-            elif text.startswith("Slide your hand"):
-                # Instructions
+            y = y_start + i * 35
+            if text.startswith("HAND GESTURE CONTROLS"):
+                # Main title
                 cv2.putText(frame, text, (self.screen_width // 2 - 200, y), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, self.colors['text_secondary'], 2)
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.2, self.colors['accent'][:3], 3)
+                cv2.putText(frame, text, (self.screen_width // 2 - 200, y), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.2, self.colors['text_primary'], 2)
+            elif text.startswith("🎯") or text.startswith("👆") or text.startswith("🔄") or text.startswith("⏸️"):
+                # Section headers
+                cv2.putText(frame, text, (self.screen_width // 2 - 200, y), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, self.colors['accent'][:3], 2)
+            elif text.startswith("•"):
+                # Bullet points
+                cv2.putText(frame, text, (self.screen_width // 2 - 180, y), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.colors['text_secondary'], 1)
             elif text.startswith("Tutorial will close"):
                 # Timer
                 cv2.putText(frame, text, (self.screen_width // 2 - 180, y), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, self.colors['text_secondary'], 2)
+            elif text == "":
+                # Empty lines
+                continue
             else:
                 # Regular text
                 cv2.putText(frame, text, (self.screen_width // 2 - 150, y), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.colors['text_secondary'], 1)
         
-        # Draw example pinch gesture
+        # Draw example hold-to-select gesture
         center_x = self.screen_width // 2
-        center_y = self.screen_height // 2 + 100
+        center_y = self.screen_height // 2 + 50
         
-        # Draw two circles representing index and middle finger tips
-        cv2.circle(frame, (center_x - 30, center_y), 15, (100, 255, 100), -1)  # Index finger (green)
-        cv2.circle(frame, (center_x + 30, center_y), 15, (100, 100, 255), -1)  # Middle finger (blue)
+        # Draw a game card outline
+        card_width = 120
+        card_height = 80
+        card_x = center_x - card_width // 2
+        card_y = center_y - card_height // 2
         
-        # Draw arrow showing they come together
-        cv2.arrowedLine(frame, (center_x - 20, center_y - 20), (center_x + 20, center_y - 20), 
-                       self.colors['accent'][:3], 4, tipLength=0.3)
+        # Card background
+        cv2.rectangle(frame, (card_x, card_y), (card_x + card_width, card_y + card_height), 
+                     self.colors['accent'][:3], 2)
         
-        cv2.putText(frame, "PINCH", (center_x - 40, center_y + 50), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, self.colors['accent'][:3], 2)
+        # Draw hand cursor over the card
+        hand_x = center_x
+        hand_y = center_y - 10
+        
+        # Hand cursor
+        cv2.circle(frame, (hand_x, hand_y), 15, (255, 255, 255), 3)
+        cv2.circle(frame, (hand_x, hand_y), 10, self.colors['accent'][:3], -1)
+        
+        # Progress bar on the card
+        progress_width = card_width - 20
+        progress_height = 6
+        progress_x = card_x + 10
+        progress_y = card_y + card_height - 15
+        
+        # Progress bar background
+        cv2.rectangle(frame, (progress_x, progress_y), (progress_x + progress_width, progress_y + progress_height), 
+                     (50, 50, 50), -1)
+        
+        # Progress bar fill (partially filled to show progress)
+        fill_width = int(progress_width * 0.7)  # 70% filled
+        cv2.rectangle(frame, (progress_x, progress_y), (progress_x + fill_width, progress_y + progress_height), 
+                     (0, 255, 0), -1)
+        
+        cv2.putText(frame, "HOLD TO SELECT", (center_x - 60, center_y + 60), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, self.colors['accent'][:3], 2)
     
     def draw_page_dots(self, frame, total_pages: int, current_page: int):
         """Draw page indicator dots"""
@@ -1215,30 +1603,50 @@ class AppStore:
                 cv2.circle(frame, (x, y), dot_radius, self.colors['text_primary'], 1)
     
     def launch_game(self, game_card: GameCard):
-        """Launch a game in a separate thread"""
+        """Launch a game using the LoadingState"""
         try:
-            print(f"🚀 Launching {game_card.name}...")
+            print(f"🚀 Launching {game_card.name} via LoadingState...")
             
-            # Start loading state
-            self.loading_game = game_card
-            self.loading_progress = 0.0
-            self.loading_start_time = time.time()
-            
-            # Create and start game thread
-            game_thread = threading.Thread(
-                target=self._run_game_in_thread,
-                args=(game_card,),
-                daemon=True
-            )
-            game_thread.start()
-            
-            # Store thread reference for monitoring
-            self.game_thread = game_thread
-            
+            if self.loading_state:
+                # Start loading state with callback
+                self.loading_state.start_loading(
+                    game_card.name, 
+                    game_card.module_path,
+                    on_complete=self._on_loading_complete
+                )
+                self.set_state(AppState.GAME_LOADING, f"Loading: {game_card.name}")
+            else:
+                # Fallback to old method if LoadingState not available
+                print("⚠️ LoadingState not available, using fallback method")
+                self._launch_game_fallback(game_card)
+                
         except Exception as e:
             print(f"❌ Error launching {game_card.name}: {e}")
-            self.loading_game = None
-            self.games_disabled = False
+            self.set_state(AppState.ERROR, f"Failed to launch: {game_card.name}")
+            self.set_state(AppState.IDLE, "Ready for selection")
+    
+    def _on_loading_complete(self):
+        """Callback when loading is complete"""
+        print("✅ LoadingState: Loading complete, transitioning to game running")
+        self.set_state(AppState.GAME_RUNNING, f"Running: {self.selected_game.name if self.selected_game else 'Game'}")
+    
+    def _launch_game_fallback(self, game_card: GameCard):
+        """Fallback game launching method"""
+        # Start loading state
+        self.loading_game = game_card
+        self.loading_progress = 0.0
+        self.loading_start_time = time.time()
+        
+        # Create and start game thread
+        game_thread = threading.Thread(
+            target=self._run_game_in_thread,
+            args=(game_card,),
+            daemon=True
+        )
+        game_thread.start()
+        
+        # Store thread reference for monitoring
+        self.game_thread = game_thread
     
     def _run_game_in_thread(self, game_card: GameCard):
         """Run game in a separate thread"""
@@ -1249,15 +1657,27 @@ class AppStore:
             
             if init_file.exists():
                 print(f"🎮 Starting {game_card.name} in thread...")
+                self.set_state(AppState.GAME_START, f"Starting: {game_card.name}")
                 
                 # Use subprocess to run the game
                 self.game_process = subprocess.Popen([sys.executable, str(init_file)], 
                                                    cwd=str(game_dir))
                 
-                # Wait for the game to finish
-                self.game_process.wait()
+                # Wait for the game to finish or for shutdown signal
+                while self.game_process.poll() is None and not self.shutting_down:
+                    time.sleep(0.1)  # Check every 100ms
                 
-                print(f"✅ {game_card.name} finished")
+                # If we're shutting down, terminate the game
+                if self.shutting_down and self.game_process.poll() is None:
+                    print(f"🔄 Terminating {game_card.name} due to app store shutdown...")
+                    self.set_state(AppState.GAME_STOP, f"Stopping: {game_card.name}")
+                    try:
+                        self.game_process.terminate()
+                        self.game_process.wait(timeout=2)
+                    except:
+                        self.game_process.kill()
+                else:
+                    print(f"✅ {game_card.name} finished")
                 
                 # Signal game completion (thread-safe)
                 with self.game_lock:
@@ -1265,25 +1685,29 @@ class AppStore:
                 
             else:
                 print(f"❌ Game file not found: {init_file}")
+                self.set_state(AppState.ERROR, f"Game file not found: {game_card.name}")
                 with self.game_lock:
                     self.game_completed = True
                 
         except subprocess.TimeoutExpired:
             print(f"⚠️ {game_card.name} timed out")
+            self.set_state(AppState.ERROR, f"Game timed out: {game_card.name}")
             if self.game_process:
                 self.game_process.kill()
             with self.game_lock:
                 self.game_completed = True
         except Exception as e:
             print(f"❌ Error running {game_card.name}: {e}")
+            self.set_state(AppState.ERROR, f"Error running: {game_card.name}")
             with self.game_lock:
                 self.game_completed = True
         finally:
             # Return to the original directory
             os.chdir(Path(__file__).parent.parent)
-            # Re-enable game clicks when returning from game
-            self.games_disabled = False
-            print("✅ Games re-enabled for clicking")
+            # Return to idle state when game ends (only if not shutting down)
+            if not self.shutting_down:
+                self.set_state(AppState.GAME_RETURNING, "Returning to app store")
+                print("✅ Returning to app store")
     
     def run(self):
         """Main app store loop"""
@@ -1303,6 +1727,9 @@ class AppStore:
             # Update animation time (optimized for 30 FPS)
             self.animation_time += 0.033  # Approximately 30 FPS
             
+            # Update state duration
+            self.update_state_duration()
+            
             # Update tutorial timer
             if self.show_slide_tutorial:
                 self.tutorial_timer += 0.016
@@ -1310,7 +1737,14 @@ class AppStore:
                     self.show_slide_tutorial = False
             
             # Update loading progress
-            if self.loading_game:
+            if self.loading_state and self.is_state(AppState.GAME_LOADING):
+                # Use LoadingState for loading management
+                loading_complete = self.loading_state.update(0.033)  # 30 FPS
+                if loading_complete:
+                    # Loading is complete, LoadingState will call the callback
+                    pass
+            elif self.loading_game:
+                # Fallback loading logic
                 elapsed_time = time.time() - self.loading_start_time
                 self.loading_progress = min(elapsed_time / self.loading_duration, 1.0)
                 
@@ -1321,10 +1755,17 @@ class AppStore:
                         if not self.game_completed:
                             self.game_completed = True
                 
-                # Keep loading state until game actually starts
-                if self.loading_progress >= 1.0 and self.game_thread and self.game_thread.is_alive():
-                    # Game is running, keep loading state minimal
-                    self.loading_progress = 0.95
+                # State transitions based on loading progress
+                current_state = self.get_state()
+                if current_state == AppState.GAME_LOADING:
+                    if self.loading_progress >= 1.0 and self.game_thread and self.game_thread.is_alive():
+                        # Loading complete, transition to running
+                        self.set_state(AppState.GAME_RUNNING, f"Running: {self.loading_game.name}")
+                        self.loading_progress = 0.95  # Keep minimal loading indicator
+                    elif self.loading_progress >= 1.0 and (not self.game_thread or not self.game_thread.is_alive()):
+                        # Loading complete but thread not running - error state
+                        self.set_state(AppState.ERROR, f"Failed to start: {self.loading_game.name}")
+                        self.loading_game = None
             
             # Check for game completion (thread-safe)
             with self.game_lock:
@@ -1342,6 +1783,7 @@ class AppStore:
                 if self.exit_progress >= 1.0:
                     self.exiting_game = False
                     self.exit_progress = 0.0
+                    self.set_state(AppState.IDLE, "Ready for selection")
             
             # Create a black background instead of showing camera feed
             frame = np.zeros((self.screen_height, self.screen_width, 3), dtype=np.uint8)
@@ -1363,7 +1805,7 @@ class AppStore:
                 card.is_hovered = False
             
             # Handle hand tracking and gestures
-            if results.multi_hand_landmarks and self.interaction_enabled:
+            if results.multi_hand_landmarks and self.can_interact():
                 # Check for pause gesture: both hands raised and both closed
                 if len(results.multi_hand_landmarks) >= 2:
                     if self.detect_pause_gesture(results.multi_hand_landmarks):
@@ -1372,6 +1814,7 @@ class AppStore:
                             self.interaction_enabled = False
                             self.interaction_timer = current_time
                             self.last_hands_raised_time = current_time
+                            self.set_state(AppState.PAUSED, "Interaction paused")
                             print("Interaction paused - both hands raised and closed")
                 
                 # Check for resume gesture: both hands raised and both open
@@ -1379,72 +1822,150 @@ class AppStore:
                     if self.detect_resume_gesture(results.multi_hand_landmarks):
                         if not self.interaction_enabled:
                             self.interaction_enabled = True
+                            self.set_state(AppState.IDLE, "Interaction resumed")
                             print("Interaction resumed - both hands raised and open")
+                
+                # Get primary hand position (right hand if both raised, otherwise the raised hand)
+                primary_hand_x, primary_hand_y = self.get_primary_hand_position(results.multi_hand_landmarks)
+                self.update_smooth_hand_position((primary_hand_x, primary_hand_y))
                 
                 # Process hand gestures for game selection and info button
                 for hand_landmarks in results.multi_hand_landmarks:
                     # Draw only dots on finger tips instead of full hand landmarks
                     self.draw_hand_dots(frame, hand_landmarks)
                     
-                    # Get hand position and update smooth tracking
+                    # Get individual hand position for gesture detection
                     hand_x, hand_y = self.get_hand_position(hand_landmarks)
-                    self.update_smooth_hand_position((hand_x, hand_y))
                     
-                    # Check for index-middle finger pinch (click gesture)
-                    if self.detect_index_middle_pinch(hand_landmarks):
-                        # Check if clicking on info button
-                        if self.is_point_in_rect((hand_x, hand_y), self.info_button_rect):
+                    # Check for info button hover and hold
+                    if self.is_point_in_rect((primary_hand_x, primary_hand_y), self.info_button_rect):
+                        # Start or continue info button hold
+                        if not hasattr(self, 'info_button_hold_start'):
+                            self.info_button_hold_start = time.time()
+                            print("ℹ️ Started info button hold")
+                        
+                        # Calculate hold progress
+                        elapsed_time = time.time() - self.info_button_hold_start
+                        info_hold_progress = min(elapsed_time / self.selection_time, 1.0)
+                        
+                        # Check if hold is complete
+                        if info_hold_progress >= 1.0:
                             self.show_slide_tutorial = True
                             self.tutorial_timer = 0
-                            print("Slide tutorial opened via click")
-                        
-                        # Check if clicking on left navigation button
-                        elif self.is_point_in_rect((hand_x, hand_y), self.left_nav_rect):
-                            if self.current_page > 0:
-                                self.current_page -= 1
-                                print("Previous page via click")
-                        
-                        # Check if clicking on right navigation button
-                        elif self.is_point_in_rect((hand_x, hand_y), self.right_nav_rect):
-                            if (self.current_page + 1) * self.games_per_page < len(self.games):
-                                self.current_page += 1
-                                print("Next page via click")
-                        
-                        # Check if clicking on any game card (only if games are not disabled)
-                        elif not self.games_disabled:
-                            current_page_start = self.current_page * self.games_per_page
-                            current_page_end = min(current_page_start + self.games_per_page, len(self.games))
-                            
-                            for i in range(current_page_start, current_page_end):
-                                card_index = i - current_page_start
-                                card = self.games[i]
-                                card_rect = self.get_card_position(card_index)
-                                
-                                if self.is_point_in_rect((hand_x, hand_y), card_rect):
-                                    print(f"Launching {card.name} via click")
-                                    self.games_disabled = True  # Disable all game clicks
-                                    self.launch_game(card)
-                                    break
+                            self.info_button_hold_start = 0
+                            print("ℹ️ Info tutorial opened via hold")
+                    else:
+                        # Reset info button hold if not hovering
+                        if hasattr(self, 'info_button_hold_start'):
+                            self.info_button_hold_start = 0
                     
-                    # Check for tutorial close with pinch gesture
-                    if self.show_slide_tutorial and self.detect_index_middle_pinch(hand_landmarks):
-                        self.show_slide_tutorial = False
-                        print("Tutorial closed via click")
-                    
-                    # Check for hover effects (no selection, just visual feedback)
-                    current_page_start = self.current_page * self.games_per_page
-                    current_page_end = min(current_page_start + self.games_per_page, len(self.games))
-                    
-                    for i in range(current_page_start, current_page_end):
-                        card_index = i - current_page_start
-                        card = self.games[i]
-                        card_rect = self.get_card_position(card_index)
+                    # Check for navigation button hover and hold
+                    if self.is_point_in_rect((primary_hand_x, primary_hand_y), self.left_nav_rect):
+                        # Start or continue left nav hold
+                        if not hasattr(self, 'left_nav_hold_start'):
+                            self.left_nav_hold_start = time.time()
+                            print("⬅️ Started left navigation hold")
                         
-                        if self.is_point_in_rect((hand_x, hand_y), card_rect):
-                            card.is_hovered = True
+                        # Calculate hold progress
+                        elapsed_time = time.time() - self.left_nav_hold_start
+                        left_hold_progress = min(elapsed_time / self.selection_time, 1.0)
+                        
+                        # Check if hold is complete
+                        if left_hold_progress >= 1.0 and self.current_page > 0:
+                            self.current_page -= 1
+                            self.left_nav_hold_start = 0
+                            print("⬅️ Previous page via hold")
+                    else:
+                        # Reset left nav hold if not hovering
+                        if hasattr(self, 'left_nav_hold_start'):
+                            self.left_nav_hold_start = 0
+                    
+                    if self.is_point_in_rect((primary_hand_x, primary_hand_y), self.right_nav_rect):
+                        # Start or continue right nav hold
+                        if not hasattr(self, 'right_nav_hold_start'):
+                            self.right_nav_hold_start = time.time()
+                            print("➡️ Started right navigation hold")
+                        
+                        # Calculate hold progress
+                        elapsed_time = time.time() - self.right_nav_hold_start
+                        right_hold_progress = min(elapsed_time / self.selection_time, 1.0)
+                        
+                        # Check if hold is complete
+                        if right_hold_progress >= 1.0 and (self.current_page + 1) * self.games_per_page < len(self.games):
+                            self.current_page += 1
+                            self.right_nav_hold_start = 0
+                            print("➡️ Next page via hold")
+                    else:
+                        # Reset right nav hold if not hovering
+                        if hasattr(self, 'right_nav_hold_start'):
+                            self.right_nav_hold_start = 0
+                    
+                    # Check for tutorial close with hold
+                    if self.show_slide_tutorial and self.is_point_in_rect((primary_hand_x, primary_hand_y), (0, 0, self.screen_width, self.screen_height)):
+                        # Start or continue tutorial close hold
+                        if not hasattr(self, 'tutorial_close_hold_start'):
+                            self.tutorial_close_hold_start = time.time()
+                            print("❌ Started tutorial close hold")
+                        
+                        # Calculate hold progress
+                        elapsed_time = time.time() - self.tutorial_close_hold_start
+                        tutorial_hold_progress = min(elapsed_time / self.selection_time, 1.0)
+                        
+                        # Check if hold is complete
+                        if tutorial_hold_progress >= 1.0:
+                            self.show_slide_tutorial = False
+                            self.tutorial_close_hold_start = 0
+                            print("❌ Tutorial closed via hold")
+                    else:
+                        # Reset tutorial close hold if not hovering
+                        if hasattr(self, 'tutorial_close_hold_start'):
+                            self.tutorial_close_hold_start = 0
+                
+                # Check for hover effects using primary hand position
+                current_page_start = self.current_page * self.games_per_page
+                current_page_end = min(current_page_start + self.games_per_page, len(self.games))
+                
+                for i in range(current_page_start, current_page_end):
+                    card_index = i - current_page_start
+                    card = self.games[i]
+                    card_rect = self.get_card_position(card_index)
+                    
+                    if self.is_point_in_rect((primary_hand_x, primary_hand_y), card_rect):
+                        card.is_hovered = True
+                        
+                        # Only allow selection if we can interact
+                        if not self.can_interact():
                             break
-                        else:
-                            card.is_hovered = False
+                        
+                        # Start or continue selection timer
+                        if card.hover_start_time == 0:
+                            card.hover_start_time = time.time()
+                            self.set_state(AppState.GAME_SELECTING, f"Selecting: {card.name}")
+                            print(f"🎯 Started selection timer for: {card.name}")
+                        
+                        # Calculate selection progress
+                        elapsed_time = time.time() - card.hover_start_time
+                        card.selection_progress = min(elapsed_time / self.selection_time, 1.0)
+                        
+                        # Check if selection is complete
+                        if card.selection_progress >= 1.0:
+                            print(f"🎮 Selection complete for: {card.name} - launching game!")
+                            self.selected_game = card
+                            self.set_state(AppState.GAME_LOADING, f"Loading: {card.name}")
+                            self.launch_game(card)
+                            # Reset all selection states
+                            for reset_card in self.games:
+                                reset_card.hover_start_time = 0
+                                reset_card.selection_progress = 0.0
+                        break
+                    else:
+                        # Reset selection timer if not hovering
+                        if card.hover_start_time > 0:
+                            card.hover_start_time = 0
+                            card.selection_progress = 0.0
+                            if self.is_state(AppState.GAME_SELECTING):
+                                self.set_state(AppState.IDLE, "Ready for selection")
+                        card.is_hovered = False
             
             # Check for interaction re-enable
             if not self.interaction_enabled:
@@ -1482,6 +2003,9 @@ class AppStore:
             # Main title
             cv2.putText(frame, title, (title_x, 80), font, 2.5, self.colors['text_primary'], 3)
             
+            # Draw application status
+            self.draw_application_status(frame)
+            
             # Draw glassmorphic subtitle
             subtitle = f"Found {len(self.games)} games - Use hand gestures to navigate"
             (subtitle_width, subtitle_height), _ = cv2.getTextSize(subtitle, font, 1.0, 2)
@@ -1509,16 +2033,19 @@ class AppStore:
             self.draw_info_button(frame)
             
             # Draw glassmorphic instructions
-            if self.games_disabled:
-                if self.game_thread and self.game_thread.is_alive():
-                    if self.loading_progress >= 0.95:
-                        instructions = "Game is running... | Navigation buttons still work | Click INFO for tutorial"
-                    else:
-                        instructions = "Game is loading... | Navigation buttons still work | Click INFO for tutorial"
-                else:
-                    instructions = "Game is loading... | Navigation buttons still work | Click INFO for tutorial"
+            current_state = self.get_state()
+            if current_state == AppState.GAME_LOADING:
+                instructions = "Game is loading... | Please wait | No interaction available during loading"
+            elif current_state == AppState.GAME_START:
+                instructions = "Game is starting... | Please wait | No interaction available during startup"
+            elif current_state == AppState.GAME_RUNNING:
+                instructions = "Game is running... | Hold over buttons for 5 seconds to interact | Click INFO for tutorial"
+            elif current_state == AppState.GAME_STOP:
+                instructions = "Game is stopping... | Please wait | No interaction available during shutdown"
+            elif current_state == AppState.GAME_RETURNING:
+                instructions = "Returning to app store... | Please wait | No interaction available during return"
             else:
-                instructions = "Pinch index & middle fingers to click | Click navigation buttons or game cards | Click INFO for tutorial"
+                instructions = "HOLD hand over game card for 5 seconds to select | HOLD over buttons for 5 seconds to interact | HOLD at screen edges for 5 seconds to swipe | Click INFO for tutorial"
             (inst_width, inst_height), _ = cv2.getTextSize(instructions, font, 0.7, 1)
             
             # Instructions background
@@ -1538,9 +2065,16 @@ class AppStore:
             if self.slide_indicator_alpha > 0:
                 self.draw_slide_indicator(frame, self.last_slide_direction)
             
+            # Draw swipe hold progress
+            self.draw_swipe_hold_progress(frame)
+            
             # Draw loading progress if active
             if self.loading_game:
                 self.draw_loading_progress(frame)
+            
+            # Draw dedicated loading screen if in loading state
+            if self.loading_state and self.is_state(AppState.GAME_LOADING):
+                self.loading_state.draw(frame)
             
             # Draw exit progress if active
             if self.exiting_game:
@@ -1592,7 +2126,15 @@ class AppStore:
             # Handle keyboard input
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
-                print("🔄 Shutting down app store...")
+                print("🔄 Shutting down app store and terminating any running games...")
+                # Set flag to indicate we're shutting down
+                self.shutting_down = True
+                
+                # Shutdown loading state if active
+                if self.loading_state:
+                    self.loading_state.shutdown()
+                
+                self.set_state(AppState.STORE_STOP, "Shutting down app store")
                 break
             elif key == ord('i'):  # Toggle tutorial
                 self.show_slide_tutorial = not self.show_slide_tutorial
@@ -1615,28 +2157,192 @@ class AppStore:
                 time.sleep(frame_time - elapsed_time)
             fps_start_time = time.time()
         
-        # Clean up any running game thread
+        # Enhanced cleanup: terminate any running game and close everything
+        print("🔄 Performing complete cleanup...")
+        
+        # First, terminate any running game process
+        if self.game_process:
+            print("🔄 Terminating running game...")
+            try:
+                # Try graceful termination first
+                self.game_process.terminate()
+                print("⏳ Waiting for game to terminate gracefully...")
+                self.game_process.wait(timeout=3)
+                print("✅ Game terminated gracefully")
+            except subprocess.TimeoutExpired:
+                # Force kill if graceful termination fails
+                print("⚠️ Force killing game process...")
+                try:
+                    self.game_process.kill()
+                    self.game_process.wait(timeout=2)
+                    print("✅ Game force killed")
+                except subprocess.TimeoutExpired:
+                    print("❌ Could not terminate game process - it may still be running")
+                except Exception as e:
+                    print(f"❌ Error force killing game: {e}")
+            except Exception as e:
+                print(f"❌ Error during game cleanup: {e}")
+        
+        # Kill any remaining game threads
         if self.game_thread and self.game_thread.is_alive():
             print("🔄 Cleaning up game thread...")
-            if self.game_process:
-                try:
-                    # Try graceful termination first
-                    self.game_process.terminate()
-                    self.game_process.wait(timeout=3)
-                    print("✅ Game terminated gracefully")
-                except subprocess.TimeoutExpired:
-                    # Force kill if graceful termination fails
-                    print("⚠️ Force killing game process...")
-                    self.game_process.kill()
-                    try:
-                        self.game_process.wait(timeout=2)
-                    except subprocess.TimeoutExpired:
-                        print("❌ Could not terminate game process")
-                except Exception as e:
-                    print(f"❌ Error during game cleanup: {e}")
+            # Note: Python threads can't be forcefully killed, but the process termination should handle this
         
+        # Release camera and close windows
+        print("🔄 Releasing camera and closing windows...")
         self.cap.release()
         cv2.destroyAllWindows()
+        
+        # Force close any remaining OpenCV windows
+        for i in range(10):  # Try multiple times to ensure all windows are closed
+            cv2.waitKey(1)
+        
+        print("✅ App store shutdown complete")
+    
+    def draw_swipe_hold_progress(self, frame):
+        """Draw swipe hold progress at screen edges"""
+        if self.swipe_hold_progress <= 0:
+            return
+        
+        # Determine which edge to show progress
+        if self.swipe_hold_direction == "left":
+            # Left edge progress
+            edge_x = 50
+            edge_y = self.screen_height // 2
+            direction_text = "SWIPE LEFT"
+        elif self.swipe_hold_direction == "right":
+            # Right edge progress
+            edge_x = self.screen_width - 50
+            edge_y = self.screen_height // 2
+            direction_text = "SWIPE RIGHT"
+        else:
+            return
+        
+        # Progress ring
+        ring_radius = 40
+        ring_thickness = int(5 + 3 * self.swipe_hold_progress)
+        
+        # Color based on progress
+        if self.swipe_hold_progress < 0.5:
+            ring_color = (0, 255, 255)  # Yellow
+        elif self.swipe_hold_progress < 0.8:
+            ring_color = (0, 200, 255)  # Orange
+        else:
+            ring_color = (0, 255, 0)  # Green
+        
+        # Draw progress ring
+        cv2.circle(frame, (edge_x, edge_y), ring_radius, ring_color, ring_thickness)
+        
+        # Progress text
+        if self.swipe_hold_progress < 0.3:
+            progress_text = "HOLD"
+        elif self.swipe_hold_progress < 0.7:
+            progress_text = "HOLDING..."
+        elif self.swipe_hold_progress < 1.0:
+            progress_text = "ALMOST..."
+        else:
+            progress_text = "READY!"
+        
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        (text_width, text_height), _ = cv2.getTextSize(progress_text, font, 0.6, 1)
+        text_x = edge_x - text_width // 2
+        text_y = edge_y + ring_radius + 30
+        
+        # Text background
+        cv2.rectangle(frame, (text_x - 10, text_y - 15), (text_x + text_width + 10, text_y + 5), 
+                     (0, 0, 0), -1)
+        cv2.addWeighted(frame, 0.3, frame, 0.7, 0, frame)
+        
+        # Text
+        cv2.putText(frame, progress_text, (text_x, text_y), font, 0.6, ring_color, 1)
+        
+        # Direction text
+        (dir_width, dir_height), _ = cv2.getTextSize(direction_text, font, 0.5, 1)
+        dir_x = edge_x - dir_width // 2
+        dir_y = text_y + 25
+        
+        cv2.putText(frame, direction_text, (dir_x, dir_y), font, 0.5, (200, 200, 200), 1)
+
+    def draw_application_status(self, frame):
+        """Draw the current application status with clear state information"""
+        current_state, state_message, state_duration = self.get_state_info()
+        
+        # Status background
+        status_bg_width = 400
+        status_bg_height = 80
+        status_bg_x = self.screen_width - status_bg_width - 20
+        status_bg_y = 20
+        
+        # Status background with glassmorphic effect
+        overlay = frame.copy()
+        cv2.rectangle(overlay, (status_bg_x, status_bg_y), (status_bg_x + status_bg_width, status_bg_y + status_bg_height), 
+                     (0, 0, 0), -1)
+        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+        
+        # Status border
+        border_color = (255, 255, 255)
+        if current_state == AppState.IDLE:
+            border_color = (0, 255, 0)  # Green for idle
+        elif current_state == AppState.GAME_SELECTING:
+            border_color = (0, 255, 255)  # Yellow for selecting
+        elif current_state == AppState.GAME_LOADING:
+            border_color = (255, 165, 0)  # Orange for loading
+        elif current_state == AppState.GAME_START:
+            border_color = (255, 140, 0)  # Dark orange for starting
+        elif current_state == AppState.GAME_RUNNING:
+            border_color = (0, 255, 0)  # Green for running
+        elif current_state == AppState.GAME_STOP:
+            border_color = (255, 0, 0)  # Red for stopping
+        elif current_state == AppState.GAME_RETURNING:
+            border_color = (0, 191, 255)  # Blue for returning
+        elif current_state == AppState.STORE_START:
+            border_color = (0, 255, 255)  # Cyan for store starting
+        elif current_state == AppState.STORE_STOP:
+            border_color = (255, 0, 0)  # Red for store stopping
+        elif current_state == AppState.PAUSED:
+            border_color = (128, 128, 128)  # Gray for paused
+        elif current_state == AppState.ERROR:
+            border_color = (255, 0, 0)  # Red for error
+        elif current_state == AppState.SHUTTING_DOWN:
+            border_color = (255, 0, 0)  # Red for shutting down
+        
+        cv2.rectangle(frame, (status_bg_x, status_bg_y), (status_bg_x + status_bg_width, status_bg_y + status_bg_height), 
+                     border_color, 2)
+        
+        # State text
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        state_text = f"STATUS: {current_state.value}"
+        (state_width, state_height), _ = cv2.getTextSize(state_text, font, 0.8, 2)
+        state_x = status_bg_x + 10
+        state_y = status_bg_y + 30
+        
+        cv2.putText(frame, state_text, (state_x, state_y), font, 0.8, border_color, 2)
+        
+        # Message text
+        if state_message:
+            message_text = state_message
+            (message_width, message_height), _ = cv2.getTextSize(message_text, font, 0.6, 1)
+            message_x = status_bg_x + 10
+            message_y = status_bg_y + 55
+            
+            # Truncate message if too long
+            if message_width > status_bg_width - 20:
+                while message_width > status_bg_width - 20 and len(message_text) > 0:
+                    message_text = message_text[:-1]
+                    (message_width, message_height), _ = cv2.getTextSize(message_text + "...", font, 0.6, 1)
+                message_text += "..."
+            
+            cv2.putText(frame, message_text, (message_x, message_y), font, 0.6, (255, 255, 255), 1)
+        
+        # Duration text
+        duration_text = f"Duration: {state_duration:.1f}s"
+        (duration_width, duration_height), _ = cv2.getTextSize(duration_text, font, 0.5, 1)
+        duration_x = status_bg_x + status_bg_width - duration_width - 10
+        duration_y = status_bg_y + 20
+        
+        cv2.putText(frame, duration_text, (duration_x, duration_y), font, 0.5, (200, 200, 200), 1)
+
+
 
 def main():
     """Main launcher function"""
@@ -1653,7 +2359,7 @@ def main():
         return
     
     print("\n🚀 Starting CVGames App Store...")
-    print("💡 Press 'q' to quit the app store")
+    print("💡 Press 'q' to quit the app store and terminate any running games")
     print("💡 Press 'i' to toggle tutorial")
     print("💡 Use index-middle finger pinch to click")
     print("💡 Click on game cards to launch them")
@@ -1661,13 +2367,37 @@ def main():
     print("💡 Click on INFO button for tutorial")
     print("=" * 40)
     
+    app_store = None
     try:
         app_store = AppStore()
         app_store.run()
     except KeyboardInterrupt:
-        print("\n👋 App store closed by user")
+        print("\n👋 App store closed by user (Ctrl+C)")
+        if app_store:
+            app_store.shutting_down = True
     except Exception as e:
         print(f"\n❌ Error starting app store: {e}")
+    finally:
+        # Ensure cleanup happens even if there's an exception
+        if app_store:
+            print("🔄 Ensuring complete cleanup...")
+            app_store.shutting_down = True
+            # Force cleanup of any remaining processes
+            if hasattr(app_store, 'game_process') and app_store.game_process:
+                try:
+                    app_store.game_process.terminate()
+                    app_store.game_process.wait(timeout=1)
+                except:
+                    try:
+                        app_store.game_process.kill()
+                    except:
+                        pass
+            if hasattr(app_store, 'cap'):
+                app_store.cap.release()
+            cv2.destroyAllWindows()
+            for i in range(5):
+                cv2.waitKey(1)
+        print("✅ Cleanup complete")
 
 if __name__ == "__main__":
     main() 
