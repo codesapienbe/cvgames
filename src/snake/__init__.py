@@ -31,8 +31,16 @@ cap.set(4, 720)
 detector = HandDetector(detectionCon=0.75, maxHands=1)
 
 # Load and resize background image
-backgroundImg = cv2.imread("Resources/Background.png")
-backgroundImg = cv2.resize(backgroundImg, (1280, 720))
+script_dir = os.path.dirname(os.path.abspath(__file__))
+background_path = os.path.join(script_dir, "Resources", "Background.png")
+backgroundImg = cv2.imread(background_path)
+if backgroundImg is None:
+    print(f"Error: Could not load background image from {background_path}")
+    # Create a simple background if image loading fails
+    backgroundImg = np.zeros((720, 1280, 3), dtype=np.uint8)
+    backgroundImg[:] = (50, 50, 50)  # Dark gray background
+else:
+    backgroundImg = cv2.resize(backgroundImg, (1280, 720))
 
 class SnakeGameClass:
     def __init__(self, pathFood):
@@ -43,6 +51,11 @@ class SnakeGameClass:
         self.previousHead = 0, 0  # previous head point
 
         self.imgFood = cv2.imread(pathFood, cv2.IMREAD_UNCHANGED)
+        if self.imgFood is None:
+            print(f"Error: Could not load food image from {pathFood}")
+            # Create a simple food circle if image loading fails
+            self.imgFood = np.zeros((50, 50, 4), dtype=np.uint8)
+            cv2.circle(self.imgFood, (25, 25), 20, (0, 255, 0, 255), -1)
         self.hFood, self.wFood, _ = self.imgFood.shape
         self.foodPoint = 0, 0
         self.randomFoodLocation()
@@ -144,7 +157,8 @@ class SnakeGameClass:
         return imgMain
 
 
-game = SnakeGameClass("Resources/Donut.png")
+food_path = os.path.join(script_dir, "Resources", "Donut.png")
+game = SnakeGameClass(food_path)
 
 while True:
     success, img = cap.read()
@@ -165,7 +179,7 @@ while True:
         })()
 
     # Check if user wants to exit
-    if back_button.handle_input(key, hand_landmarks, hand_position):
+    if back_button.handle_input(None, hand_landmarks, hand_position):
         print("User approved exit - returning to app store")
         cap.release()
         cv2.destroyAllWindows()

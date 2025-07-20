@@ -12,6 +12,7 @@ from deepface import DeepFace
 import os
 import sys
 import argparse
+from collections import deque
 
 # Import the back button system
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'cvstore'))
@@ -22,24 +23,71 @@ pygame.mixer.init()
 
 # Load sound effects
 try:
-    beep_sound = pygame.mixer.Sound("beep.mp3")
-    win_sound = pygame.mixer.Sound("win.mp3")
-    lose_sound = pygame.mixer.Sound("lose.mp3")
-except:
-    print("Warning: Sound files not found. Game will run without sound.")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    beep_sound = pygame.mixer.Sound(os.path.join(script_dir, "beep.mp3"))
+    win_sound = pygame.mixer.Sound(os.path.join(script_dir, "win.mp3"))
+    lose_sound = pygame.mixer.Sound(os.path.join(script_dir, "lose.mp3"))
+except Exception as e:
+    print(f"Warning: Sound files not found: {e}. Game will run without sound.")
     beep_sound = None
     win_sound = None
     lose_sound = None
 
 # Load background image
 try:
-    background_img = cv2.imread("Resources/Background.png")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    background_path = os.path.join(script_dir, "Resources", "Background.png")
+    background_img = cv2.imread(background_path)
     if background_img is None:
-        print("Warning: Background image not found. Using black background.")
+        print(f"Warning: Background image not found at {background_path}. Using black background.")
         background_img = None
-except:
-    print("Warning: Could not load background image. Using black background.")
+except Exception as e:
+    print(f"Warning: Could not load background image: {e}. Using black background.")
     background_img = None
+
+class SimpleGestureController:
+    def __init__(self, hold_threshold=65, move_delay=0.3, rotation_cooldown=0.8):
+        self.hold_threshold = hold_threshold
+        self.move_delay = move_delay
+        self.rotation_cooldown = rotation_cooldown
+        self.last_move_time = 0
+        self.last_rotation_time = 0
+        self.right_hand_was_together = False
+        self.left_hand_was_together = False
+        
+    def can_move(self, current_time):
+        """Check if enough time has passed for next move"""
+        return current_time - self.last_move_time > self.move_delay
+    
+    def can_rotate(self, current_time):
+        """Check if enough time has passed for next rotation"""
+        return current_time - self.last_rotation_time > self.rotation_cooldown
+    
+    def update_move_time(self, current_time):
+        """Update the last move time"""
+        self.last_move_time = current_time
+        
+    def update_rotation_time(self, current_time):
+        """Update the last rotation time"""
+        self.last_rotation_time = current_time
+        
+    def should_move(self, right_hand_together, current_time):
+        """Check if right hand should trigger movement (only on finger press)"""
+        if right_hand_together and not self.right_hand_was_together and self.can_move(current_time):
+            self.right_hand_was_together = True
+            return True
+        elif not right_hand_together:
+            self.right_hand_was_together = False
+        return False
+        
+    def should_rotate(self, left_hand_together, current_time):
+        """Check if left hand should trigger rotation (only on finger press)"""
+        if left_hand_together and not self.left_hand_was_together and self.can_rotate(current_time):
+            self.left_hand_was_together = True
+            return True
+        elif not left_hand_together:
+            self.left_hand_was_together = False
+        return False
 
 # Tetris pieces and their rotations
 SHAPES = [
@@ -53,13 +101,13 @@ SHAPES = [
 ]
 
 COLORS = [
-    (0, 255, 255),   # Cyan
-    (255, 255, 0),   # Yellow
-    (128, 0, 128),   # Purple
-    (255, 165, 0),   # Orange
-    (0, 0, 255),     # Blue
-    (0, 255, 0),     # Green
-    (255, 0, 0)      # Red
+    (100, 200, 200),   # Soft cyan
+    (200, 200, 100),   # Soft yellow
+    (150, 100, 150),   # Soft purple
+    (200, 150, 100),   # Soft orange
+    (100, 100, 200),   # Soft blue
+    (100, 200, 100),   # Soft green
+    (200, 100, 100)    # Soft red
 ]
 
 class TetrisPiece:
@@ -166,6 +214,9 @@ def main():
     game = TetrisGame()
     game.new_piece()
 
+    # Initialize rotation gesture detector
+    finger_controller = SimpleGestureController()
+
     # List available cameras
     available_cameras = []
     for i in range(10):  # Check first 10 indices
@@ -211,7 +262,7 @@ def main():
 
     cap.set(3, GAME_WIDTH)
     cap.set(4, GAME_HEIGHT)
-    detector = HandDetector(detectionCon=0.75, maxHands=1)
+    detector = HandDetector(detectionCon=0.75, maxHands=2)
     
     # Initialize back button
     back_button = BackButton(GAME_WIDTH, GAME_HEIGHT)
@@ -231,8 +282,7 @@ def main():
 
     last_move_time = time.time()
     move_delay = 0.5  # Initial delay between moves
-    last_rotation_time = time.time()
-    rotation_delay = 0.3  # Delay between rotations
+    key = None  # Initialize key variable
 
     while cap.isOpened():
         success, img = cap.read()
@@ -302,40 +352,82 @@ def main():
                 cv2.destroyAllWindows()
                 return
 
-            if hands:
-                if len(hands) == 1:
-                    landmarks = hands[0]["lmList"]
-                    distance, _, img = detector.findDistance(landmarks[8][:2], landmarks[12][:2], img)
-                    x, y = landmarks[8][:2]
+            # Process each detected hand separately
+            right_hand_action = None
+            left_hand_action = None
+            
+            for hand in hands:
+                landmarks = hand["lmList"]
+                hand_type = hand["type"]  # "Left" or "Right"
+                
+                # Measure distance between index finger (8) and thumb (4) only
+                index_finger = landmarks[8][:2]  # Index finger tip
+                thumb = landmarks[4][:2]  # Thumb tip
+                
+                # Calculate distance manually between index and thumb
+                distance = math.sqrt((index_finger[0] - thumb[0])**2 + (index_finger[1] - thumb[1])**2)
+                x, y = index_finger  # Use index finger position for movement
 
-                    # Draw hand tracking on game board
-                    for lm in landmarks:
-                        cv2.circle(game_board, (int(lm[0]), int(lm[1])), 3, (0, 255, 0), cv2.FILLED)
+                # Draw only index finger and thumb tracking on game board
+                cv2.circle(game_board, (int(index_finger[0]), int(index_finger[1])), 5, (100, 200, 100), -1)  # Soft green for index
+                cv2.circle(game_board, (int(thumb[0]), int(thumb[1])), 5, (200, 100, 100), -1)  # Soft red for thumb
+                
+                # Draw distance line between index and thumb only
+                cv2.line(game_board, 
+                        (int(index_finger[0]), int(index_finger[1])),
+                        (int(thumb[0]), int(thumb[1])),
+                        (150, 150, 150), 2)  # Soft gray line
+
+                # Check if index and thumb are together (distance < threshold)
+                fingers_together = distance < finger_controller.hold_threshold
+
+                # Show hand status
+                hand_color = (0, 200, 100) if fingers_together else (100, 100, 100)  # Softer green/gray
+                status_text = f"{hand_type} HAND: {'INDEX+THUMB TOGETHER' if fingers_together else 'INDEX+THUMB SEPARATED'}"
+                y_offset = 100 if hand_type == "Right" else 130
+                cvzone.putTextRect(game_board, status_text,
+                                 (50, y_offset), scale=1.0, offset=5, colorR=hand_color)
+                
+                cvzone.putTextRect(game_board, f"Index-Thumb Distance: {distance:.1f}",
+                                 (50, y_offset + 30), scale=0.8, offset=3, colorR=(150, 150, 150))  # Soft gray
+
+                # Store action for this hand (only if index and thumb are together)
+                if hand_type == "Right":
+                    if finger_controller.should_move(fingers_together, current_time):
+                        right_hand_action = ("move", x, y)
+                elif hand_type == "Left":
+                    if finger_controller.should_rotate(fingers_together, current_time):
+                        left_hand_action = "rotate"
+
+            # Execute actions separately (no interference between hands)
+            if right_hand_action:
+                action_type, x, y = right_hand_action
+                if action_type == "move":
+                    # Right hand controls movement
+                    game_x = int((x - start_x) / cell_size)
+
+                    # Move piece based on hand position
+                    if game_x < game.current_piece.x:
+                        game.move(-1, 0)
+                    elif game_x > game.current_piece.x + len(game.current_piece.shape[0]):
+                        game.move(1, 0)
                     
-                    # Draw distance line
-                    cv2.line(game_board, 
-                            (int(landmarks[8][0]), int(landmarks[8][1])),
-                            (int(landmarks[12][0]), int(landmarks[12][1])),
-                            (255, 255, 255), 2)
-
-                    if distance < 65:
-                        # Convert hand position to game coordinates
-                        game_x = int((x - start_x) / cell_size)
-                        game_y = int((y - start_y) / cell_size)
-
-                        # Move piece based on hand position
-                        if current_time - last_move_time > move_delay:
-                            if game_x < game.current_piece.x:
-                                game.move(-1, 0)
-                            elif game_x > game.current_piece.x + len(game.current_piece.shape[0]):
-                                game.move(1, 0)
-                            last_move_time = current_time
-
-                        # Rotate piece based on hand movement
-                        if current_time - last_rotation_time > rotation_delay:
-                            if y < start_y + board_height / 2:
-                                game.rotate()
-                            last_rotation_time = current_time
+                    finger_controller.update_move_time(current_time)
+                    
+                    # Show movement indicator in top right
+                    cvzone.putTextRect(game_board, 'RIGHT HAND MOVING',
+                                     (GAME_WIDTH - 300, 30), scale=1.0, offset=5, colorR=(100, 200, 100))  # Soft green
+                    
+            if left_hand_action:
+                if left_hand_action == "rotate":
+                    # Left hand controls rotation
+                    game.rotate()
+                    play_sound(beep_sound)
+                    finger_controller.update_rotation_time(current_time)
+                    
+                    # Show rotation indicator in top right
+                    cvzone.putTextRect(game_board, 'LEFT HAND ROTATING',
+                                     (GAME_WIDTH - 300, 60), scale=1.0, offset=5, colorR=(200, 100, 100))  # Soft red
 
             # Auto move down
             if current_time - last_move_time > move_delay:
@@ -354,6 +446,12 @@ def main():
                                (GAME_WIDTH - 150, 50), scale=1.4, offset=10)
             cvzone.putTextRect(game_board, f'Lines: {game.lines_cleared}',
                                (GAME_WIDTH - 450, 50), scale=1.4, offset=10)
+
+            # Add gesture instructions
+            cvzone.putTextRect(game_board, 'Right Hand: Hold index+thumb to move piece',
+                               (50, 50), scale=1.0, offset=5, colorR=(150, 200, 150))  # Soft green
+            cvzone.putTextRect(game_board, 'Left Hand: Hold index+thumb to rotate piece',
+                               (50, 80), scale=1.0, offset=5, colorR=(200, 150, 150))  # Soft red
 
             # Add small camera view in bottom left corner
             camera_view = img.copy()
@@ -383,6 +481,7 @@ def main():
         if key == ord('r'):  # restart game
             game = TetrisGame()
             game.new_piece()
+            # finger_controller.history.clear() # No history to clear for simple gesture
         elif key == ord('q'):  # quit
             cap.release()
             cv2.destroyAllWindows()
