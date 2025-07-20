@@ -8,24 +8,34 @@ Duck Hunt brings the nostalgic arcade experience to life with modern computer vi
 
 ## Features
 
-- **Hand Gesture Control**: Point your index finger to aim and shoot
-- **Animated Ducks**: Realistic duck movement with flapping wings
-- **Scoring System**: Earn points for each duck hit
-- **Timer**: 60-second time limit for each round
-- **Visual Effects**: Shot animations and hit effects
-- **Back Button**: Easy return to app store with gesture or keyboard control
+- **Enhanced Hand Tracking**: Improved index finger detection with multiple fallback methods
+- **Easy Quarter-Circle Shooting**: Forgiving thumb gesture (left→top) with only 20% motion required
+- **Stabilized Cursor**: Reduced shaking when hand is stationary
+- **Aim Stabilization**: Locks aim position during shooting gestures to prevent drift
+- **Multiple Duck Types**: 7 different colored ducks with varying scores
+- **High-Intensity Spawning**: 5x more ducks for action-packed gameplay (15-30+ per round)
+- **Multiple Targets**: 4-12 ducks on screen simultaneously
+- **Enhanced Background**: Moving clouds, trees, bushes, and natural grass animation
+- **Progressive Difficulty**: More duck types and faster spawning at higher levels
+- **Visual Effects**: Color-coded hit effects and score displays
+- **Game Completion**: Win/lose conditions with 50% accuracy requirement
+- **Gesture-Based UI**: All buttons use shooting gesture for interaction
+- **Replay System**: Easy restart after game completion
+- **Retro Graphics**: Authentic NES Duck Hunt style
+- **Optimized UI Layout**: Scoreboard on top-right, progress on top-left
 
 ## Controls
 
 - **Aim**: Point your index finger at the screen
-- **Shoot**: Keep index finger extended, other fingers closed
+- **Shoot**: Move thumb in quarter-circle motion (top to left)
 - **Exit**: Press 'B' or use the back button gesture
 - **Restart**: Press 'R' to restart the game
 
 ## Technical Details
 
 - **Computer Vision**: OpenCV and MediaPipe for hand tracking
-- **Gesture Recognition**: Index finger pointing detection
+- **Gesture Recognition**: Enhanced index finger detection with multiple fallback methods
+- **Shooting Gesture**: Quarter-circle thumb motion detection with trajectory analysis
 - **Game Engine**: Custom game loop with collision detection
 - **Graphics**: OpenCV drawing functions for all game elements
 
