@@ -3,10 +3,15 @@ import cvzone
 from cvzone.HandTrackingModule import HandDetector
 import numpy as np
 import argparse
+import sys
+import os
 
 # Import the back button system
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'cvstore'))
 from back_button import BackButton
+
+screen_width = 1280
+screen_height = 720
 
 def main():
     # Set up argument parser
@@ -26,28 +31,29 @@ def main():
     back_button = BackButton(screen_width, screen_height)
     cap.set(4, 720)
 
-    # Importing all images
-    imgBackground = cv2.imread("Resources/Background.png")
+    # Importing all images with correct path
+    resources_path = os.path.join(os.path.dirname(__file__), "Resources")
+    imgBackground = cv2.imread(os.path.join(resources_path, "Background.png"))
     if imgBackground is None:
         print("Error: Could not load Background.png")
         exit(-1)
 
-    imgGameOver = cv2.imread("Resources/gameOver.png")
+    imgGameOver = cv2.imread(os.path.join(resources_path, "gameOver.png"))
     if imgGameOver is None:
         print("Error: Could not load gameOver.png")
         exit(-1)
 
-    imgBall = cv2.imread("Resources/Ball.png", cv2.IMREAD_UNCHANGED)
+    imgBall = cv2.imread(os.path.join(resources_path, "Ball.png"), cv2.IMREAD_UNCHANGED)
     if imgBall is None:
         print("Error: Could not load Ball.png")
         exit(-1)
 
-    imgBat1 = cv2.imread("Resources/bat1.png", cv2.IMREAD_UNCHANGED)
+    imgBat1 = cv2.imread(os.path.join(resources_path, "bat1.png"), cv2.IMREAD_UNCHANGED)
     if imgBat1 is None:
         print("Error: Could not load bat1.png")
         exit(-1)
 
-    imgBat2 = cv2.imread("Resources/bat2.png", cv2.IMREAD_UNCHANGED)
+    imgBat2 = cv2.imread(os.path.join(resources_path, "bat2.png"), cv2.IMREAD_UNCHANGED)
     if imgBat2 is None:
         print("Error: Could not load bat2.png")
         exit(-1)
@@ -83,8 +89,8 @@ def main():
                 })() for lm in hands[0]["lmList"]]
             })()
 
-        # Check if user wants to exit
-        if back_button.handle_input(key, hand_landmarks, hand_position):
+        # Check if user wants to exit (key will be defined later in the loop)
+        if hand_landmarks and back_button.handle_input(None, hand_landmarks, hand_position):
             print("User approved exit - returning to app store")
             cap.release()
             cv2.destroyAllWindows()
@@ -147,7 +153,7 @@ def main():
 
 
         # Draw back button
-        back_button.draw(frame, hand_position)
+        back_button.draw(img, hand_position)
         cv2.imshow("Image", img)
         key = cv2.waitKey(1)
         if key == ord('r'):
@@ -156,7 +162,7 @@ def main():
             speedY = 15
             gameOver = False
             score = [0, 0]
-            imgGameOver = cv2.imread("Resources/gameOver.png")
+            imgGameOver = cv2.imread(os.path.join(resources_path, "gameOver.png"))
         if key == ord('f'):
             speedX = 35
             speedY = 35

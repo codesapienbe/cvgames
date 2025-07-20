@@ -1,4 +1,4 @@
- import cv2
+import cv2
 import mediapipe as mp
 import time
 import random
@@ -10,9 +10,7 @@ import argparse
 import sys
 import os
 
-# Add the parent directory to sys.path to import from utils
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils.loading_screen import show_loading_screen
+# Loading screen function is defined locally below
 
 pygame.mixer.init()
 

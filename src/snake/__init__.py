@@ -6,6 +6,11 @@ import numpy as np
 from cvzone.HandTrackingModule import HandDetector
 import argparse
 import time
+import sys
+import os
+
+screen_width = 1280
+screen_height = 720
 
 # Import the back button system
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'cvstore'))
@@ -20,7 +25,7 @@ cap = cv2.VideoCapture(args.camera)
 cap.set(3, 1280)
 
     # Initialize back button
-    back_button = BackButton(screen_width, screen_height)
+back_button = BackButton(screen_width, screen_height)
 cap.set(4, 720)
 
 detector = HandDetector(detectionCon=0.75, maxHands=1)
@@ -146,25 +151,25 @@ while True:
     img = cv2.flip(img, 1)
     hands, img = detector.findHands(img, flipType=False)
 
-        # Handle back button input
-        hand_position = None
-        hand_landmarks = None
-        if hands:
-            hand_position = hands[0]["lmList"][9][:2]  # Palm center
-            # Convert to MediaPipe landmarks format for back button
-            hand_landmarks = type('HandLandmarks', (), {
-                'landmark': [type('Landmark', (), {
-                    'x': lm[0] / screen_width,
-                    'y': lm[1] / screen_height
-                })() for lm in hands[0]["lmList"]]
-            })()
+    # Handle back button input
+    hand_position = None
+    hand_landmarks = None
+    if hands:
+        hand_position = hands[0]["lmList"][9][:2]  # Palm center
+        # Convert to MediaPipe landmarks format for back button
+        hand_landmarks = type('HandLandmarks', (), {
+            'landmark': [type('Landmark', (), {
+                'x': lm[0] / screen_width,
+                'y': lm[1] / screen_height
+            })() for lm in hands[0]["lmList"]]
+        })()
 
-        # Check if user wants to exit
-        if back_button.handle_input(key, hand_landmarks, hand_position):
-            print("User approved exit - returning to app store")
-            cap.release()
-            cv2.destroyAllWindows()
-            return
+    # Check if user wants to exit
+    if back_button.handle_input(key, hand_landmarks, hand_position):
+        print("User approved exit - returning to app store")
+        cap.release()
+        cv2.destroyAllWindows()
+        break
 
     # Create a copy of the background image
     gameImg = backgroundImg.copy()
@@ -195,7 +200,7 @@ while True:
 
 
         # Draw back button
-        back_button.draw(frame, hand_position)
+    back_button.draw(gameImg, hand_position)
     cv2.imshow("Snake Game", gameImg)
     key = cv2.waitKey(1)
 
