@@ -19,7 +19,7 @@ class Fruit:
         self.gravity = 0.3 if not hanging else 0.1  # Less gravity for hanging fruits
         self.fruit_type = fruit_type
         self.color = color
-        self.radius = 75  # Increased from 25 to 75 (3x larger)
+        self.radius = 50  # Increased from 25 to 50 (2x larger)
         self.sliced = False
         self.slice_time = 0
         self.hanging = hanging
@@ -65,24 +65,24 @@ class Fruit:
             if self.fruit_type == "apple":
                 # Apple stem
                 cv2.line(frame, (int(self.x), int(self.y - self.radius)), 
-                        (int(self.x), int(self.y - self.radius - 24)), (139, 69, 19), 6)  # Increased size
-                cv2.circle(frame, (int(self.x), int(self.y - self.radius - 24)), 6, (34, 139, 34), -1)  # Increased size
+                        (int(self.x), int(self.y - self.radius - 16)), (139, 69, 19), 4)  # Increased size
+                cv2.circle(frame, (int(self.x), int(self.y - self.radius - 16)), 4, (34, 139, 34), -1)  # Increased size
             elif self.fruit_type == "banana":
                 # Banana curve
-                cv2.ellipse(frame, (int(self.x), int(self.y)), (self.radius, self.radius//2), 0, 0, 180, (0, 200, 255), 6)  # Increased thickness
+                cv2.ellipse(frame, (int(self.x), int(self.y)), (self.radius, self.radius//2), 0, 0, 180, (0, 200, 255), 4)  # Increased thickness
             elif self.fruit_type == "grape":
                 # Grape cluster effect
-                for i in range(5):  # More grapes for larger size
-                    offset_x = random.randint(-15, 15)  # Increased offset
-                    offset_y = random.randint(-15, 15)  # Increased offset
-                    cv2.circle(frame, (int(self.x + offset_x), int(self.y + offset_y)), 24, self.color, -1)  # Increased size
+                for i in range(4):  # More grapes for larger size
+                    offset_x = random.randint(-10, 10)  # Increased offset
+                    offset_y = random.randint(-10, 10)  # Increased offset
+                    cv2.circle(frame, (int(self.x + offset_x), int(self.y + offset_y)), 16, self.color, -1)  # Increased size
             
             # Add highlight
-            cv2.circle(frame, (int(self.x - 24), int(self.y - 24)), 9, (255, 255, 255), -1)  # Increased size
+            cv2.circle(frame, (int(self.x - 16), int(self.y - 16)), 6, (255, 255, 255), -1)  # Increased size
         else:
             # Draw sliced fruit (two halves) - increased size
-            cv2.ellipse(frame, (int(self.x - 30), int(self.y)), (45, 24), 0, 0, 180, self.color, -1)  # Increased size
-            cv2.ellipse(frame, (int(self.x + 30), int(self.y)), (45, 24), 0, 180, 360, self.color, -1)  # Increased size
+            cv2.ellipse(frame, (int(self.x - 20), int(self.y)), (30, 16), 0, 0, 180, self.color, -1)  # Increased size
+            cv2.ellipse(frame, (int(self.x + 20), int(self.y)), (30, 16), 0, 180, 360, self.color, -1)  # Increased size
 
 class Bomb:
     def __init__(self, x: int, y: int):
@@ -93,7 +93,7 @@ class Bomb:
         self.vx = random.uniform(-self.speed, self.speed)
         self.vy = random.uniform(self.speed * 0.5, self.speed)  # Downward velocity
         self.gravity = 0.3
-        self.radius = 60  # Increased from 20 to 60 (3x larger)
+        self.radius = 40  # Increased from 20 to 40 (2x larger)
         self.exploded = False
         self.explosion_time = 0
         
@@ -108,13 +108,13 @@ class Bomb:
             cv2.circle(frame, (int(self.x), int(self.y)), self.radius, (50, 50, 50), -1)
             # Draw fuse
             cv2.line(frame, (int(self.x), int(self.y - self.radius)), 
-                    (int(self.x), int(self.y - self.radius - 45)), (139, 69, 19), 9)  # Increased size
+                    (int(self.x), int(self.y - self.radius - 30)), (139, 69, 19), 6)  # Increased size
             # Draw fuse tip
-            cv2.circle(frame, (int(self.x), int(self.y - self.radius - 45)), 15, (255, 165, 0), -1)  # Increased size
+            cv2.circle(frame, (int(self.x), int(self.y - self.radius - 30)), 10, (255, 165, 0), -1)  # Increased size
         else:
             # Draw explosion
-            explosion_radius = int(90 + (time.time() - self.explosion_time) * 60)  # Increased explosion size
-            cv2.circle(frame, (int(self.x), int(self.y)), explosion_radius, (0, 0, 255), 6)  # Increased thickness
+            explosion_radius = int(60 + (time.time() - self.explosion_time) * 40)  # Increased explosion size
+            cv2.circle(frame, (int(self.x), int(self.y)), explosion_radius, (0, 0, 255), 4)  # Increased thickness
 
 class Sword:
     def __init__(self):
@@ -210,6 +210,11 @@ class FruitNinja:
         self.last_hand_pos: Optional[Tuple[int, int]] = None
         self.sword = Sword()
         
+        # Warning mode for bomb explosions
+        self.warning_mode = False
+        self.warning_start_time = 0
+        self.warning_duration = 1.5  # 1.5 seconds
+        
         # Fruit types and colors
         self.fruit_types = [
             ("apple", (0, 0, 255)),      # Red
@@ -237,16 +242,33 @@ class FruitNinja:
         if is_macos:
             print("🍎 Detected macOS - using specialized camera handling")
         
+        # Close any existing camera connections first
+        print("   Closing any existing camera connections...")
+        try:
+            # Try to close camera connections for different indices
+            for i in range(3):
+                temp_cap = cv2.VideoCapture(i)
+                if temp_cap.isOpened():
+                    temp_cap.release()
+                    print(f"   Closed camera connection {i}")
+        except Exception as e:
+            print(f"   Warning: Could not close existing connections: {e}")
+        
+        # Wait a moment for connections to fully close
+        import time
+        time.sleep(1)
+        
         # Try different camera backends and indices
         camera_configs = []
         
         if is_macos:
-            # macOS-specific configurations
+            # macOS-specific configurations - try different approaches
             camera_configs.extend([
+                (0, cv2.CAP_ANY),           # Auto-detect backend first
                 (0, cv2.CAP_AVFOUNDATION),  # AVFoundation backend
-                (0, cv2.CAP_ANY),           # Auto-detect backend
-                (1, cv2.CAP_AVFOUNDATION),  # Try second camera with AVFoundation
                 (1, cv2.CAP_ANY),           # Try second camera with auto-detect
+                (1, cv2.CAP_AVFOUNDATION),  # Try second camera with AVFoundation
+                (-1, cv2.CAP_ANY),          # Try auto-detect with -1 index
             ])
         else:
             # Generic configurations for other platforms
@@ -261,6 +283,11 @@ class FruitNinja:
             print(f"   Trying camera index: {camera_index} with backend: {backend_name}")
             
             try:
+                # Set environment variable for macOS camera access
+                if is_macos:
+                    import os
+                    os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'
+                
                 cap = cv2.VideoCapture(camera_index, backend)
                 
                 if cap.isOpened():
@@ -290,19 +317,39 @@ class FruitNinja:
                 print(f"   Error with camera {camera_index}: {e}")
                 continue
         
-        # If no camera found, try with minimal settings
-        print("   Trying minimal camera settings...")
+        # If no camera found, try with minimal settings and different approach
+        print("   Trying alternative camera initialization...")
+        try:
+            # Try with different environment settings
+            if is_macos:
+                import os
+                os.environ['OPENCV_VIDEOIO_PRIORITY_MSMF'] = '0'
+                os.environ['OPENCV_VIDEOIO_PRIORITY_AVFOUNDATION'] = '1'
+            
+            cap = cv2.VideoCapture(0)
+            if cap.isOpened():
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    print("✅ Camera initialized with alternative settings")
+                    return cap
+                else:
+                    cap.release()
+        except Exception as e:
+            print(f"   Alternative initialization failed: {e}")
+        
+        # Final attempt with basic settings
+        print("   Trying basic camera initialization...")
         try:
             cap = cv2.VideoCapture(0)
             if cap.isOpened():
                 ret, frame = cap.read()
                 if ret and frame is not None:
-                    print("✅ Camera initialized with minimal settings")
+                    print("✅ Camera initialized with basic settings")
                     return cap
                 else:
                     cap.release()
         except Exception as e:
-            print(f"   Minimal settings failed: {e}")
+            print(f"   Basic initialization failed: {e}")
         
         print("❌ No working camera found")
         
@@ -312,10 +359,22 @@ class FruitNinja:
             print("1. Check System Preferences > Security & Privacy > Camera")
             print("   - Make sure your terminal/IDE has camera access")
             print("   - If using VS Code, check if it has camera permissions")
-            print("2. Try running from Terminal.app instead of VS Code")
-            print("3. Check if another app is using the camera")
-            print("4. Try: sudo killall VDCAssistant")
-            print("5. Restart your computer if issues persist")
+            print("   - Look for 'Terminal', 'Python', or your IDE in the list")
+            print("2. Try running from Terminal.app instead of VS Code:")
+            print("   - Open Terminal.app")
+            print("   - Navigate to your project: cd /Users/yilmaz/Projects/cvgames/src/fruitninja")
+            print("   - Run: python __init__.py")
+            print("3. Reset camera service:")
+            print("   - Run: sudo killall VDCAssistant")
+            print("   - Wait 5 seconds, then try again")
+            print("4. Check if another app is using the camera:")
+            print("   - Close FaceTime, Photo Booth, or other camera apps")
+            print("   - Check Activity Monitor for camera-using processes")
+            print("5. Grant camera permissions manually:")
+            print("   - Go to System Preferences > Security & Privacy > Camera")
+            print("   - Click the lock icon to make changes")
+            print("   - Add your terminal/IDE if not listed")
+            print("6. Restart your computer if issues persist")
         else:
             print("\n💡 General Camera Troubleshooting:")
             print("1. Make sure your webcam is connected")
@@ -369,6 +428,10 @@ class FruitNinja:
                     self.bombs_exploded += 1
                     self.score = max(0, self.score - 20)  # Lose 20 points
                     
+                    # Activate warning mode
+                    self.warning_mode = True
+                    self.warning_start_time = time.time()
+                    
                     if self.bombs_exploded >= 3:
                         self.game_over = True
                         
@@ -386,6 +449,10 @@ class FruitNinja:
             if bomb.y > 800 or (bomb.exploded and time.time() - bomb.explosion_time > 1.0):
                 self.bombs.remove(bomb)
                 
+        # Update warning mode
+        if self.warning_mode and time.time() - self.warning_start_time > self.warning_duration:
+            self.warning_mode = False
+                
     def draw_ui(self, frame):
         # Draw score
         cv2.putText(frame, f"Score: {self.score}", (10, 50), 
@@ -400,6 +467,20 @@ class FruitNinja:
             for i in range(len(self.swipe_trail) - 1):
                 cv2.line(frame, self.swipe_trail[i], self.swipe_trail[i+1], 
                         (0, 255, 0), 2)
+        
+        # Draw warning border if in warning mode
+        if self.warning_mode:
+            border_thickness = 20
+            # Draw red border around the entire frame
+            cv2.rectangle(frame, (0, 0), (frame.shape[1], frame.shape[0]), (0, 0, 255), border_thickness)
+            
+            # Add warning text
+            warning_text = "WARNING!"
+            text_size = cv2.getTextSize(warning_text, self.font, 2, 4)[0]
+            text_x = (frame.shape[1] - text_size[0]) // 2
+            text_y = 100
+            cv2.putText(frame, warning_text, (text_x, text_y), 
+                       self.font, 2, (0, 0, 255), 4)
                 
         # Draw game over screen
         if self.game_over:
@@ -414,6 +495,20 @@ class FruitNinja:
             cv2.putText(frame, "Press 'q' to quit", (500, 500), 
                        self.font, 1, (255, 255, 255), 2)
                        
+    def restart_game(self):
+        """Restart the game with fresh state"""
+        print("🔄 Restarting game...")
+        self.score = 0
+        self.bombs_exploded = 0
+        self.game_over = False
+        self.fruits.clear()
+        self.bombs.clear()
+        self.swipe_trail.clear()
+        self.warning_mode = False
+        self.fruit_spawn_timer = 0
+        self.bomb_spawn_timer = 0
+        print("✅ Game restarted! Score reset to 0.")
+        
     def run(self):
         print("🎯 Fruit Ninja CV Game Started!")
         print("📋 Instructions:")
@@ -421,7 +516,9 @@ class FruitNinja:
         print("   - Slice fruits to score points")
         print("   - Avoid bombs (3 bombs = game over)")
         print("   - Some fruits hang from strings!")
+        print("   - Red border warning when bombs explode!")
         print("   - Press 'q' to quit")
+        print("   - Press 'r' to restart anytime")
         print()
         
         while True:
@@ -492,14 +589,9 @@ class FruitNinja:
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
-            elif key == ord('r') and self.game_over:
-                # Restart game
-                self.score = 0
-                self.bombs_exploded = 0
-                self.game_over = False
-                self.fruits.clear()
-                self.bombs.clear()
-                self.swipe_trail.clear()
+            elif key == ord('r'):
+                # Restart game anytime
+                self.restart_game()
                 
         self.cap.release()
         cv2.destroyAllWindows()
