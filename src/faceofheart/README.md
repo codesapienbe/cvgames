@@ -198,32 +198,12 @@ python gesture_controlled_heart_rate.py --debug
 ### **Project Structure**
 
 ```
-heartsense-pro/
-├── src/
-│   ├── core/
-│   │   ├── gesture_recognition.py    # Gesture detection algorithms
-│   │   ├── signal_processing.py     # Heart rate signal processing
-│   │   ├── computer_vision.py       # Face detection and ROI extraction
-│   │   └── state_machine.py         # Application state management
-│   ├── ui/
-│   │   ├── dashboard.py             # Main UI components
-│   │   ├── animations.py            # Heartbeat animations
-│   │   └── themes.py                # UI styling and themes
-│   └── utils/
-│       ├── validators.py            # Input validation
-│       ├── logger.py                # Logging utilities
-│       └── config.py                # Configuration management
-├── tests/
-│   ├── unit/                        # Unit tests
-│   ├── integration/                 # Integration tests
-│   └── performance/                 # Performance benchmarks
-├── docs/
-│   ├── api/                         # API documentation
-│   ├── algorithms/                  # Algorithm explanations
-│   └── deployment/                  # Deployment guides
-├── requirements.txt                 # Production dependencies
-├── requirements-dev.txt             # Development dependencies
-└── setup.py                         # Package configuration
+- src/faceofheart/
+-- __init__.py
+-- README.md
+-- PLAYER.md
+-- icon.png
+-- __tests__.py
 ```
 
 ### **API Reference**

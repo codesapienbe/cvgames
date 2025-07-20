@@ -1,11 +1,11 @@
 """
-💓 HeartSense Pro - Gesture-Controlled Heart Rate Detection System
-Complete click-free interface with advanced gesture recognition
+💓 HeartSense Pro - Head Circle Gesture Controlled Heart Rate Detection System
+Complete click-free interface with head circle gesture detection
 
-Gesture Controls:
-- START: Left hand open palm to left of head + Right hand open palm to right of head
-- STOP: Both hands covering face
-- Auto state machine with smooth transitions
+Head Circle Controls:
+- START: Draw a complete circle with your head (clockwise or counterclockwise)
+- STOP: Draw another complete circle with your head (same gesture)
+- Toggle state machine with smooth transitions
 """
 
 import cv2
@@ -23,23 +23,23 @@ import math
 import warnings
 warnings.filterwarnings('ignore')
 
-# Install MediaPipe for hand detection if not available
+# Install MediaPipe for face detection if not available
 try:
     import mediapipe as mp
 except ImportError:
-    print("Installing MediaPipe for gesture recognition...")
+    print("Installing MediaPipe for face detection...")
     import subprocess
     subprocess.check_call(["pip", "install", "mediapipe"])
     import mediapipe as mp
 
-# 1️⃣ 🎨 Enhanced UI Theme with Gesture Feedback
+# 1️⃣ 🎨 Enhanced UI Theme with Face Orientation Feedback
 class UITheme:
     """
-    CALL ORDER: 1️⃣ - First initialization for UI styling with gesture indicators
-    Enhanced Apple-inspired design system with gesture feedback
+    CALL ORDER: 1️⃣ - First initialization for UI styling with face orientation indicators
+    Enhanced Apple-inspired design system with face orientation feedback
     """
     
-    # Apple Health-inspired Color Palette + Gesture Colors
+    # Apple Health-inspired Color Palette + Face Orientation Colors
     COLORS = {
         'primary_blue': '#007AFF',        # Apple System Blue
         'health_green': '#32D74B',        # Apple Health Green
@@ -53,9 +53,9 @@ class UITheme:
         'card_background': '#2C2C2E',     # Glass card
         'success': '#34C759',             # Success green
         'error': '#FF453A',               # Error red
-        'gesture_start': '#00D4FF',       # Gesture start indicator
-        'gesture_stop': '#FF6B35',        # Gesture stop indicator
-        'gesture_active': '#FFD60A',      # Gesture detected
+        'circle_gesture': '#00D4FF',      # Head circle gesture detected
+        'circle_tracking': '#FF6B35',     # Circle tracking in progress
+        'circle_active': '#FFD60A',       # Circle gesture active
     }
     
     # Typography
@@ -65,229 +65,264 @@ class UITheme:
         'body': ('Helvetica Neue', 14, 'normal'),
         'caption': ('Helvetica Neue', 12, 'normal'),
         'large_display': ('Helvetica Neue', 48, 'bold'),
-        'gesture_title': ('Helvetica Neue', 20, 'bold'),
+        'face_title': ('Helvetica Neue', 20, 'bold'),
     }
 
-# 2️⃣ 🤚 Advanced Gesture Recognition System
-class GestureRecognitionSystem:
+# 2️⃣ 👤 Advanced Head Circle Gesture Detection System
+class HeadCircleGestureDetectionSystem:
     """
-    CALL ORDER: 2️⃣ - Initialize gesture recognition with MediaPipe
-    Advanced gesture recognition using MediaPipe with state machine
+    CALL ORDER: 2️⃣ - Initialize head circle gesture detection with MediaPipe
+    Advanced head circle gesture detection using MediaPipe with state machine
     """
     
     def __init__(self):
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
+        self.mp_face_mesh = mp.solutions.face_mesh
+        self.face_mesh = self.mp_face_mesh.FaceMesh(
             static_image_mode=False,
-            max_num_hands=2,
+            max_num_faces=1,
             min_detection_confidence=0.7,
             min_tracking_confidence=0.5
         )
         self.mp_drawing = mp.solutions.drawing_utils
         
-        # Gesture detection parameters
-        self.gesture_confidence_threshold = 0.8
-        self.gesture_hold_time = 1.0  # seconds
-        self.last_gesture_time = 0
-        self.current_gesture = None
-        self.gesture_start_time = 0
+        # Head circle gesture detection parameters
+        self.circle_threshold = 0.15  # Minimum movement threshold
+        self.circle_completion_threshold = 0.8  # How complete the circle must be
+        self.circle_timeout = 3.0  # Maximum time to complete circle
+        self.min_circle_points = 8  # Minimum points to track for circle
         
-    def detect_hands(self, frame):
+        # Circle tracking
+        self.head_positions = deque(maxlen=30)  # Store recent head positions
+        self.circle_start_time = None
+        self.is_tracking_circle = False
+        self.last_gesture_time = 0
+        self.gesture_cooldown = 1.0  # Seconds between gestures
+        
+    def detect_head_position(self, frame):
         """
-        CALL ORDER: 2️⃣A - Detect hands in frame
-        Detect and return hand landmarks and handedness
+        CALL ORDER: 2️⃣A - Detect head position in frame
+        Detect face and calculate head center position
         """
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = self.hands.process(rgb_frame)
+        results = self.face_mesh.process(rgb_frame)
         
-        hand_landmarks = []
-        handedness_labels = []
-        
-        if results.multi_hand_landmarks and results.multi_handedness:
-            for hand_landmark, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-                hand_landmarks.append(hand_landmark)
-                handedness_labels.append(handedness.classification[0].label)
-                
-        return hand_landmarks, handedness_labels, results
-    
-    def is_hand_open(self, landmarks):
-        """
-        CALL ORDER: 2️⃣B - Check if hand shows open palm
-        Detect open palm by analyzing finger positions
-        """
-        # Finger tip and PIP joint landmarks
-        finger_tips = [8, 12, 16, 20]  # Index, Middle, Ring, Pinky tips
-        finger_pips = [6, 10, 14, 18]  # PIP joints
-        
-        open_fingers = 0
-        
-        # Check fingers (except thumb)
-        for tip, pip in zip(finger_tips, finger_pips):
-            if landmarks.landmark[tip].y < landmarks.landmark[pip].y:
-                open_fingers += 1
-        
-        # Check thumb (different logic due to orientation)
-        thumb_tip = landmarks.landmark[4]
-        thumb_ip = landmarks.landmark[3]
-        wrist = landmarks.landmark[0]
-        
-        # Thumb is open if tip is farther from wrist than IP joint
-        thumb_distance_tip = abs(thumb_tip.x - wrist.x)
-        thumb_distance_ip = abs(thumb_ip.x - wrist.x)
-        
-        if thumb_distance_tip > thumb_distance_ip:
-            open_fingers += 1
+        if results.multi_face_landmarks:
+            # Get the first (and should be only) face
+            face_landmarks = results.multi_face_landmarks[0]
             
-        return open_fingers >= 4  # At least 4 out of 5 fingers open
+            # Calculate head center position
+            head_position = self.calculate_head_position(face_landmarks, frame.shape)
+            return head_position, face_landmarks, results
+        else:
+            return None, None, results
     
-    def get_hand_position(self, landmarks):
+    def calculate_head_position(self, landmarks, frame_shape):
         """
-        CALL ORDER: 2️⃣C - Get hand position relative to frame
-        Calculate hand center position and classify location
+        CALL ORDER: 2️⃣B - Calculate head center position
+        Calculate head center coordinates for circle tracking
         """
-        # Calculate hand center
-        x_coords = [lm.x for lm in landmarks.landmark]
-        y_coords = [lm.y for lm in landmarks.landmark]
+        # Key facial landmarks for head position calculation
+        nose_tip = landmarks.landmark[1]  # Nose tip
+        left_eye = landmarks.landmark[33]  # Left eye outer corner
+        right_eye = landmarks.landmark[263]  # Right eye outer corner
         
-        center_x = sum(x_coords) / len(x_coords)
-        center_y = sum(y_coords) / len(y_coords)
+        # Calculate head center (average of nose and eye center)
+        eye_center_x = (left_eye.x + right_eye.x) / 2
+        eye_center_y = (left_eye.y + right_eye.y) / 2
         
-        # Classify position
-        position = {
-            'center_x': center_x,
-            'center_y': center_y,
-            'is_left_side': center_x < 0.3,
-            'is_right_side': center_x > 0.7,
-            'is_center': 0.3 <= center_x <= 0.7,
-            'is_face_level': 0.2 <= center_y <= 0.8
+        head_center_x = (nose_tip.x + eye_center_x) / 2
+        head_center_y = (nose_tip.y + eye_center_y) / 2
+        
+        return {
+            'x': head_center_x,
+            'y': head_center_y,
+            'timestamp': time.time()
         }
-        
-        return position
     
-    def detect_start_gesture(self, hand_landmarks, handedness_labels):
+    def detect_circle_gesture(self, head_position):
         """
-        CALL ORDER: 2️⃣D - Detect START gesture
-        START: Left hand open palm to left + Right hand open palm to right
+        CALL ORDER: 2️⃣C - Detect circle gesture from head movement
+        Analyze head positions to detect circular motion
         """
-        if len(hand_landmarks) != 2:
-            return False
-            
-        # Map hands to their positions
-        hands_dict = {}
-        for i, label in enumerate(handedness_labels):
-            hands_dict[label] = hand_landmarks[i]
-        
-        left_hand = hands_dict.get('Left')
-        right_hand = hands_dict.get('Right')
-        
-        if not (left_hand and right_hand):
-            return False
-        
-        # Check conditions for START gesture
-        left_open = self.is_hand_open(left_hand)
-        right_open = self.is_hand_open(right_hand)
-        
-        left_pos = self.get_hand_position(left_hand)
-        right_pos = self.get_hand_position(right_hand)
-        
-        # LEFT hand should be open and on left side at face level
-        left_correct = (left_open and 
-                       left_pos['is_left_side'] and 
-                       left_pos['is_face_level'])
-        
-        # RIGHT hand should be open and on right side at face level
-        right_correct = (right_open and 
-                        right_pos['is_right_side'] and 
-                        right_pos['is_face_level'])
-        
-        return left_correct and right_correct
-    
-    def detect_stop_gesture(self, hand_landmarks, handedness_labels):
-        """
-        CALL ORDER: 2️⃣E - Detect STOP gesture
-        STOP: Both hands covering face (both hands near center)
-        """
-        if len(hand_landmarks) != 2:
-            return False
-            
-        both_hands_center = True
-        both_hands_face_level = True
-        
-        for landmarks in hand_landmarks:
-            position = self.get_hand_position(landmarks)
-            if not position['is_center']:
-                both_hands_center = False
-            if not position['is_face_level']:
-                both_hands_face_level = False
-                
-        return both_hands_center and both_hands_face_level
-    
-    def process_gestures(self, frame):
-        """
-        CALL ORDER: 2️⃣F - Main gesture processing function
-        Process frame and return gesture state with confidence
-        """
-        hand_landmarks, handedness_labels, results = self.detect_hands(frame)
+        if head_position is None:
+            return False, 0.0
         
         current_time = time.time()
-        gesture_detected = None
-        confidence = 0.0
         
-        # Detect gestures
-        if self.detect_start_gesture(hand_landmarks, handedness_labels):
-            gesture_detected = 'START'
-            confidence = 0.9
-        elif self.detect_stop_gesture(hand_landmarks, handedness_labels):
-            gesture_detected = 'STOP'
-            confidence = 0.9
+        # Add current position to tracking
+        self.head_positions.append(head_position)
         
-        # Gesture stability check - must hold gesture for minimum time
-        if gesture_detected:
-            if self.current_gesture != gesture_detected:
-                self.current_gesture = gesture_detected
-                self.gesture_start_time = current_time
-            else:
-                # Same gesture detected, check if held long enough
-                hold_duration = current_time - self.gesture_start_time
-                if hold_duration >= self.gesture_hold_time:
-                    self.last_gesture_time = current_time
-                    return gesture_detected, confidence, hand_landmarks, results
-        else:
-            self.current_gesture = None
+        # Check if we have enough points to analyze
+        if len(self.head_positions) < self.min_circle_points:
+            return False, 0.0
+        
+        # Check for significant movement to start circle tracking
+        if not self.is_tracking_circle:
+            if len(self.head_positions) >= 3:
+                # Calculate movement magnitude
+                recent_positions = list(self.head_positions)[-3:]
+                movement = self.calculate_movement_magnitude(recent_positions)
+                
+                if movement > self.circle_threshold:
+                    self.is_tracking_circle = True
+                    self.circle_start_time = current_time
+                    return False, 0.0
+        
+        # If tracking circle, analyze for completion
+        if self.is_tracking_circle:
+            # Check timeout
+            if current_time - self.circle_start_time > self.circle_timeout:
+                self.reset_circle_tracking()
+                return False, 0.0
             
-        return None, confidence, hand_landmarks, results
+            # Analyze circle completion
+            circle_score = self.analyze_circle_completion()
+            
+            if circle_score > self.circle_completion_threshold:
+                # Circle completed!
+                self.reset_circle_tracking()
+                
+                # Check cooldown
+                if current_time - self.last_gesture_time > self.gesture_cooldown:
+                    self.last_gesture_time = current_time
+                    return True, circle_score
+            
+        return False, 0.0
+    
+    def calculate_movement_magnitude(self, positions):
+        """
+        CALL ORDER: 2️⃣D - Calculate movement magnitude
+        Calculate how much the head has moved
+        """
+        if len(positions) < 2:
+            return 0.0
+        
+        total_movement = 0.0
+        for i in range(1, len(positions)):
+            dx = positions[i]['x'] - positions[i-1]['x']
+            dy = positions[i]['y'] - positions[i-1]['y']
+            distance = math.sqrt(dx*dx + dy*dy)
+            total_movement += distance
+        
+        return total_movement
+    
+    def analyze_circle_completion(self):
+        """
+        CALL ORDER: 2️⃣E - Analyze circle completion
+        Analyze head positions to determine if a circle was completed
+        """
+        if len(self.head_positions) < self.min_circle_points:
+            return 0.0
+        
+        positions = list(self.head_positions)
+        
+        # Calculate center of the movement
+        center_x = sum(p['x'] for p in positions) / len(positions)
+        center_y = sum(p['y'] for p in positions) / len(positions)
+        
+        # Calculate distances from center
+        distances = []
+        for pos in positions:
+            dx = pos['x'] - center_x
+            dy = pos['y'] - center_y
+            distance = math.sqrt(dx*dx + dy*dy)
+            distances.append(distance)
+        
+        # Check if distances are relatively consistent (indicating circular motion)
+        if len(distances) > 0:
+            avg_distance = sum(distances) / len(distances)
+            variance = sum((d - avg_distance) ** 2 for d in distances) / len(distances)
+            consistency = 1.0 - min(variance / (avg_distance + 1e-6), 1.0)
+            
+            # Check if we have enough movement coverage
+            movement_coverage = self.calculate_movement_coverage(positions)
+            
+            return (consistency + movement_coverage) / 2
+        
+        return 0.0
+    
+    def calculate_movement_coverage(self, positions):
+        """
+        CALL ORDER: 2️⃣F - Calculate movement coverage
+        Calculate how well the movement covers a circular area
+        """
+        if len(positions) < 4:
+            return 0.0
+        
+        # Calculate angular coverage
+        center_x = sum(p['x'] for p in positions) / len(positions)
+        center_y = sum(p['y'] for p in positions) / len(positions)
+        
+        angles = []
+        for pos in positions:
+            angle = math.atan2(pos['y'] - center_y, pos['x'] - center_x)
+            angles.append(angle)
+        
+        # Calculate angular span
+        angles.sort()
+        angular_span = angles[-1] - angles[0]
+        
+        # Normalize to 0-1 range (full circle = 2π)
+        coverage = min(angular_span / (2 * math.pi), 1.0)
+        
+        return coverage
+    
+    def reset_circle_tracking(self):
+        """
+        CALL ORDER: 2️⃣G - Reset circle tracking
+        Reset all circle tracking variables
+        """
+        self.head_positions.clear()
+        self.circle_start_time = None
+        self.is_tracking_circle = False
+    
+    def process_head_circle_gesture(self, frame):
+        """
+        CALL ORDER: 2️⃣H - Main head circle gesture processing function
+        Process frame and return gesture state with confidence
+        """
+        head_position, face_landmarks, results = self.detect_head_position(frame)
+        
+        # Detect circle gesture
+        circle_detected, confidence = self.detect_circle_gesture(head_position)
+        
+        if circle_detected:
+            return "CIRCLE_GESTURE", confidence, face_landmarks, results, head_position
+        else:
+            return None, confidence, face_landmarks, results, head_position
 
-# 3️⃣ 🔄 Gesture-Based State Machine
-class GestureStateMachine:
+# 3️⃣ 🔄 Head Circle Gesture-Based State Machine
+class HeadCircleGestureStateMachine:
     """
-    CALL ORDER: 3️⃣ - Initialize state machine for gesture control
-    State machine for managing detection states via gestures
+    CALL ORDER: 3️⃣ - Initialize state machine for head circle gesture control
+    State machine for managing detection states via head circle gestures
     """
     
     def __init__(self):
         self.state = 'STOPPED'  # STOPPED, RUNNING, TRANSITIONING
         self.previous_state = 'STOPPED'
         self.state_change_time = time.time()
-        self.transition_duration = 2.0  # seconds
+        self.transition_duration = 0.5  # seconds - fast response for circle gestures
         
-    def update_state(self, gesture, confidence):
+    def update_state(self, gesture_status, confidence):
         """
-        CALL ORDER: 3️⃣A - Update state based on detected gesture
-        Process gesture and update state accordingly
+        CALL ORDER: 3️⃣A - Update state based on detected head circle gesture
+        Process head circle gesture and toggle state accordingly
         """
         current_time = time.time()
         
-        if gesture == 'START' and self.state == 'STOPPED' and confidence > 0.8:
-            self.previous_state = self.state
-            self.state = 'RUNNING'
-            self.state_change_time = current_time
-            return True, "Detection Started"
-            
-        elif gesture == 'STOP' and self.state == 'RUNNING' and confidence > 0.8:
-            self.previous_state = self.state
-            self.state = 'STOPPED'
-            self.state_change_time = current_time
-            return True, "Detection Stopped"
+        if gesture_status == 'CIRCLE_GESTURE' and confidence > 0.7:
+            # Toggle state - same gesture for both start and stop
+            if self.state == 'STOPPED':
+                self.previous_state = self.state
+                self.state = 'RUNNING'
+                self.state_change_time = current_time
+                return True, "Detection Started - Head Circle Gesture Detected"
+            else:
+                self.previous_state = self.state
+                self.state = 'STOPPED'
+                self.state_change_time = current_time
+                return True, "Detection Stopped - Head Circle Gesture Detected"
             
         return False, f"Current State: {self.state}"
     
@@ -306,11 +341,11 @@ class GestureStateMachine:
             'is_running': self.state == 'RUNNING'
         }
 
-# 4️⃣ 💓 Enhanced Heartbeat Animator with Gesture Feedback
+# 4️⃣ 💓 Enhanced Heartbeat Animator with Face Orientation Feedback
 class EnhancedHeartbeatAnimator:
     """
     CALL ORDER: 4️⃣ - Initialize enhanced heartbeat animations
-    Advanced heartbeat animations with gesture state feedback
+    Advanced heartbeat animations with face orientation state feedback
     """
     
     def __init__(self, canvas, x, y, size=60):
@@ -320,20 +355,20 @@ class EnhancedHeartbeatAnimator:
         self.base_size = size
         self.bpm = 70
         self.detection_active = False
-        self.gesture_state = 'STOPPED'
+        self.head_circle_gesture_state = 'STOPPED'
         
         # Animation parameters
         self.pulse_intensity = 1.0
         self.color_transition = 0.0
         
-    def update_state(self, bpm, detection_active, gesture_state):
+    def update_state(self, bpm, detection_active, head_circle_gesture_state):
         """
         CALL ORDER: 4️⃣A - Update animator with current state
-        Update heart rate, detection state, and gesture feedback
+        Update heart rate, detection state, and head circle gesture feedback
         """
         self.bpm = max(40, min(200, bpm)) if bpm else 70
         self.detection_active = detection_active
-        self.gesture_state = gesture_state
+        self.head_circle_gesture_state = head_circle_gesture_state
         
     def get_dynamic_heart_scale(self):
         """
@@ -359,14 +394,14 @@ class EnhancedHeartbeatAnimator:
     def get_heart_color(self):
         """
         CALL ORDER: 4️⃣C - Get heart color based on state
-        Dynamic color based on detection state and gesture feedback
+        Dynamic color based on detection state and face orientation feedback
         """
-        if self.gesture_state == 'RUNNING':
+        if self.head_circle_gesture_state == 'RUNNING':
             # Pulsing red when active
             pulse_factor = (math.sin(time.time() * 3) + 1) / 2
             red_intensity = int(255 * (0.7 + 0.3 * pulse_factor))
             return f"#{red_intensity:02x}3B30"
-        elif self.gesture_state == 'STOPPED':
+        elif self.head_circle_gesture_state == 'STOPPED':
             # Dim blue when stopped
             return UITheme.COLORS['primary_blue']
         else:
@@ -441,11 +476,11 @@ class EnhancedHeartbeatAnimator:
                 tags=tag
             )
 
-# 5️⃣ 📊 Gesture-Enhanced Dashboard
-class GestureEnhancedDashboard:
+# 5️⃣ 📊 Head Circle Gesture-Enhanced Dashboard
+class HeadCircleGestureEnhancedDashboard:
     """
-    CALL ORDER: 5️⃣ - Initialize gesture-enhanced dashboard
-    Advanced dashboard with gesture feedback and enhanced visualizations
+    CALL ORDER: 5️⃣ - Initialize head circle gesture-enhanced dashboard
+    Advanced dashboard with head circle gesture feedback and enhanced visualizations
     """
     
     def __init__(self, parent_frame):
@@ -461,10 +496,10 @@ class GestureEnhancedDashboard:
     def setup_dashboard(self):
         """
         CALL ORDER: 5️⃣A - Setup enhanced dashboard layout
-        Create all dashboard components with gesture indicators
+        Create all dashboard components with head circle gesture indicators
         """
         self.create_main_heart_display()
-        self.create_gesture_control_panel()
+        self.create_head_circle_gesture_control_panel()
         self.create_metrics_panel()
         self.create_enhanced_chart()
         self.create_status_panel()
@@ -483,7 +518,7 @@ class GestureEnhancedDashboard:
         self.main_title = tk.Label(
             self.title_frame,
             text="💓 Heart Rate Monitor",
-            font=UITheme.FONTS['gesture_title'],
+            font=UITheme.FONTS['face_title'],
             fg=UITheme.COLORS['text_primary'],
             bg=UITheme.COLORS['card_background']
         )
@@ -492,7 +527,7 @@ class GestureEnhancedDashboard:
         # Detection status
         self.detection_status = tk.Label(
             self.title_frame,
-            text="Use gestures to control",
+            text="Draw a circle with your head to start/stop",
             font=UITheme.FONTS['body'],
             fg=UITheme.COLORS['text_secondary'],
             bg=UITheme.COLORS['card_background']
@@ -544,56 +579,56 @@ class GestureEnhancedDashboard:
         # Initialize enhanced heart animator
         self.heart_animator = EnhancedHeartbeatAnimator(self.heart_canvas, 75, 60, 40)
         
-    def create_gesture_control_panel(self):
+    def create_head_circle_gesture_control_panel(self):
         """
-        CALL ORDER: 5️⃣C - Create gesture control indicators
-        Visual feedback for gesture controls
+        CALL ORDER: 5️⃣C - Create head circle gesture control indicators
+        Visual feedback for head circle gesture controls
         """
-        self.gesture_card = self.create_glass_frame(470, 50, 300, 280)
+        self.head_circle_gesture_card = self.create_glass_frame(470, 50, 300, 280)
         
         # Title
-        gesture_title = tk.Label(
-            self.gesture_card,
-            text="🤚 Gesture Controls",
+        head_circle_gesture_title = tk.Label(
+            self.head_circle_gesture_card,
+            text="🔄 Head Circle Gesture Controls",
             font=UITheme.FONTS['heading'],
             fg=UITheme.COLORS['text_primary'],
             bg=UITheme.COLORS['card_background']
         )
-        gesture_title.pack(pady=(20, 15))
+        head_circle_gesture_title.pack(pady=(20, 15))
         
-        # START gesture indicator
-        self.start_frame = tk.Frame(self.gesture_card, bg=UITheme.COLORS['card_background'])
-        self.start_frame.pack(pady=10, padx=20, fill='x')
+        # Gesture instruction
+        self.gesture_instruction_frame = tk.Frame(self.head_circle_gesture_card, bg=UITheme.COLORS['card_background'])
+        self.gesture_instruction_frame.pack(pady=10, padx=20, fill='x')
         
-        self.start_status = tk.Label(
-            self.start_frame,
-            text="▶️ START: Hands open at sides",
+        self.gesture_instruction = tk.Label(
+            self.gesture_instruction_frame,
+            text="🔄 Draw a complete circle with your head",
             font=UITheme.FONTS['body'],
-            fg=UITheme.COLORS['gesture_start'],
+            fg=UITheme.COLORS['circle_gesture'],
             bg=UITheme.COLORS['card_background']
         )
-        self.start_status.pack(anchor='w')
+        self.gesture_instruction.pack(anchor='w')
         
-        # STOP gesture indicator
-        self.stop_frame = tk.Frame(self.gesture_card, bg=UITheme.COLORS['card_background'])
-        self.stop_frame.pack(pady=10, padx=20, fill='x')
+        # Toggle explanation
+        self.toggle_frame = tk.Frame(self.head_circle_gesture_card, bg=UITheme.COLORS['card_background'])
+        self.toggle_frame.pack(pady=10, padx=20, fill='x')
         
-        self.stop_status = tk.Label(
-            self.stop_frame,
-            text="⏹️ STOP: Cover face with hands",
+        self.toggle_explanation = tk.Label(
+            self.toggle_frame,
+            text="🔄 Same gesture to start and stop",
             font=UITheme.FONTS['body'],
-            fg=UITheme.COLORS['gesture_stop'],
+            fg=UITheme.COLORS['circle_tracking'],
             bg=UITheme.COLORS['card_background']
         )
-        self.stop_status.pack(anchor='w')
+        self.toggle_explanation.pack(anchor='w')
         
         # Current gesture detection
-        self.current_gesture_frame = tk.Frame(self.gesture_card, bg=UITheme.COLORS['card_background'])
+        self.current_gesture_frame = tk.Frame(self.head_circle_gesture_card, bg=UITheme.COLORS['card_background'])
         self.current_gesture_frame.pack(pady=20, padx=20, fill='x')
         
         self.current_gesture_label = tk.Label(
             self.current_gesture_frame,
-            text="Current Status:",
+            text="Current Gesture Status:",
             font=UITheme.FONTS['caption'],
             fg=UITheme.COLORS['text_secondary'],
             bg=UITheme.COLORS['card_background']
@@ -604,7 +639,7 @@ class GestureEnhancedDashboard:
             self.current_gesture_frame,
             text="⏸️ STOPPED",
             font=UITheme.FONTS['heading'],
-            fg=UITheme.COLORS['gesture_stop'],
+            fg=UITheme.COLORS['circle_tracking'],
             bg=UITheme.COLORS['card_background']
         )
         self.gesture_indicator.pack(pady=5)
@@ -765,8 +800,8 @@ class GestureEnhancedDashboard:
             self.status_card, "📹 Camera", "Ready", UITheme.COLORS['success']
         )
         
-        self.gesture_recognition_status = self.create_status_indicator(
-            self.status_card, "🤚 Gesture Recognition", "Active", UITheme.COLORS['primary_blue']
+        self.head_circle_gesture_status = self.create_status_indicator(
+            self.status_card, "🔄 Head Circle Gesture", "Active", UITheme.COLORS['primary_blue']
         )
         
         self.face_detection_status = self.create_status_indicator(
@@ -811,7 +846,7 @@ class GestureEnhancedDashboard:
         return frame
     
     def update_display(self, hr, confidence, signal_quality, motion_level, 
-                      gesture_state, active_roi, face_detected):
+                      head_circle_gesture_state, active_roi, face_detected, gesture_status=None):
         """
         CALL ORDER: 5️⃣K - Update all display elements
         Update all dashboard components with current data
@@ -824,7 +859,7 @@ class GestureEnhancedDashboard:
             )
             
             # Update heart animator
-            self.heart_animator.update_state(hr, gesture_state == 'RUNNING', gesture_state)
+            self.heart_animator.update_state(hr, head_circle_gesture_state == 'RUNNING', head_circle_gesture_state)
             
             # Add to history
             current_time = time.time()
@@ -845,25 +880,36 @@ class GestureEnhancedDashboard:
             text=f"Quality: {signal_quality:.0%}" if signal_quality else "Quality: --%"
         )
         
-        # Update gesture status
-        if gesture_state == 'RUNNING':
+        # Update head circle gesture status
+        if head_circle_gesture_state == 'RUNNING':
             self.gesture_indicator.config(
                 text="▶️ RUNNING",
-                fg=UITheme.COLORS['gesture_start']
+                fg=UITheme.COLORS['circle_gesture']
             )
             self.detection_status.config(
                 text="🔍 Actively detecting heart rate...",
                 fg=UITheme.COLORS['success']
             )
         else:
-            self.gesture_indicator.config(
-                text="⏹️ STOPPED",
-                fg=UITheme.COLORS['gesture_stop']
-            )
-            self.detection_status.config(
-                text="Use gestures to control",
-                fg=UITheme.COLORS['text_secondary']
-            )
+            # Show gesture tracking status if available
+            if gesture_status == 'CIRCLE_GESTURE':
+                self.gesture_indicator.config(
+                    text="🔄 CIRCLE DETECTED",
+                    fg=UITheme.COLORS['circle_active']
+                )
+                self.detection_status.config(
+                    text="Circle gesture detected!",
+                    fg=UITheme.COLORS['circle_gesture']
+                )
+            else:
+                self.gesture_indicator.config(
+                    text="⏹️ STOPPED",
+                    fg=UITheme.COLORS['circle_tracking']
+                )
+                self.detection_status.config(
+                    text="Draw a circle with your head to start/stop",
+                    fg=UITheme.COLORS['text_secondary']
+                )
         
         # Update metrics bars
         if hasattr(self, 'signal_quality_frame'):
@@ -888,8 +934,8 @@ class GestureEnhancedDashboard:
         )
         
         self.processing_status.config(
-            text="⚡ Signal Processing: " + ("Active" if gesture_state == 'RUNNING' else "Standby"),
-            fg=UITheme.COLORS['success'] if gesture_state == 'RUNNING' else UITheme.COLORS['text_secondary']
+            text="⚡ Signal Processing: " + ("Active" if head_circle_gesture_state == 'RUNNING' else "Standby"),
+            fg=UITheme.COLORS['success'] if head_circle_gesture_state == 'RUNNING' else UITheme.COLORS['text_secondary']
         )
     
     def get_hr_color(self, hr):
@@ -1180,11 +1226,11 @@ def calculate_robust_heart_rate(freqs_analysis_result, previous_hr_buffer):
     
     return int(current_hr), min(confidence, 1.0)
 
-# 1️⃣4️⃣ 🚀 Main Gesture-Controlled Application
-class GestureControlledHeartRateApp:
+# 1️⃣4️⃣ 🚀 Main Head Circle Gesture-Controlled Application
+class HeadCircleGestureControlledHeartRateApp:
     """
-    CALL ORDER: 1️⃣4️⃣ - Main application with complete gesture control
-    Complete gesture-controlled heart rate detection system
+    CALL ORDER: 1️⃣4️⃣ - Main application with complete head circle gesture control
+    Complete head circle gesture-controlled heart rate detection system
     """
     
     def __init__(self):
@@ -1195,7 +1241,7 @@ class GestureControlledHeartRateApp:
         
     def setup_window(self):
         """CALL ORDER: 1️⃣4️⃣A - Setup main window"""
-        self.root.title("💓 HeartSense Pro - Gesture-Controlled Heart Rate Monitor")
+        self.root.title("💓 HeartSense Pro - Head Circle Gesture Control")
         self.root.geometry("1200x800")
         self.root.configure(bg=UITheme.COLORS['background_dark'])
         self.root.resizable(False, False)
@@ -1220,9 +1266,9 @@ class GestureControlledHeartRateApp:
         self.main_frame.pack(fill='both', expand=True)
         
         # Initialize components
-        self.dashboard = GestureEnhancedDashboard(self.main_frame)
-        self.gesture_system = GestureRecognitionSystem()
-        self.state_machine = GestureStateMachine()
+        self.dashboard = HeadCircleGestureEnhancedDashboard(self.main_frame)
+        self.head_circle_gesture_system = HeadCircleGestureDetectionSystem()
+        self.state_machine = HeadCircleGestureStateMachine()
         
         # Computer vision components
         self.cap = None
@@ -1248,7 +1294,7 @@ class GestureControlledHeartRateApp:
         # Main title
         title_label = tk.Label(
             title_frame,
-            text="💓 HeartSense Pro - Gesture Control",
+            text="💓 HeartSense Pro - Head Circle Gesture Control",
             font=('Helvetica Neue', 32, 'bold'),
             fg=UITheme.COLORS['text_primary'],
             bg=UITheme.COLORS['background_dark']
@@ -1258,7 +1304,7 @@ class GestureControlledHeartRateApp:
         # Subtitle
         subtitle_label = tk.Label(
             title_frame,
-            text="🤚 Click-Free Heart Rate Detection • Use Hand Gestures to Control",
+            text="🔄 Click-Free Heart Rate Detection • Draw Circle with Head to Control",
             font=UITheme.FONTS['heading'],
             fg=UITheme.COLORS['text_secondary'],
             bg=UITheme.COLORS['background_dark']
@@ -1291,11 +1337,14 @@ class GestureControlledHeartRateApp:
                 if not ret:
                     continue
                 
-                # Process gestures first
-                gesture, gesture_confidence, hand_landmarks, gesture_results = self.gesture_system.process_gestures(frame)
+                # Process head circle gesture first
+                gesture_status, gesture_confidence, face_landmarks, gesture_results, head_position = self.head_circle_gesture_system.process_head_circle_gesture(frame)
+                
+                # Store current gesture status for UI updates
+                self.current_gesture_status = gesture_status
                 
                 # Update state machine
-                state_changed, state_message = self.state_machine.update_state(gesture, gesture_confidence)
+                state_changed, state_message = self.state_machine.update_state(gesture_status, gesture_confidence)
                 if state_changed:
                     print(f"🔄 State changed: {state_message}")
                 
@@ -1345,7 +1394,7 @@ class GestureControlledHeartRateApp:
                                                 
                                                 if len(self.hr_buffer) >= 3:
                                                     self.heart_rate = int(np.median(list(self.hr_buffer)[-3:]))
-                                                    self.confidence = np.mean(list(self.confidence_buffer)[-3:]))
+                                                    self.confidence = np.mean(list(self.confidence_buffer)[-3:])
                                                 else:
                                                     self.heart_rate = new_heart_rate
                                                     self.confidence = new_confidence
@@ -1377,7 +1426,8 @@ class GestureControlledHeartRateApp:
                     self.motion_level,
                     state_info['state'],
                     self.active_roi,
-                    self.face_detected
+                    self.face_detected,
+                    getattr(self, 'current_gesture_status', None)
                 )
                 
                 # Animate heartbeat
@@ -1394,10 +1444,10 @@ class GestureControlledHeartRateApp:
                 
     def run(self):
         """CALL ORDER: 1️⃣4️⃣G - Start the application"""
-        print("🚀 Starting Gesture-Controlled Heart Rate Detection")
-        print("👋 Gesture Controls:")
-        print("   ▶️  START: Open palms at sides of head")
-        print("   ⏹️  STOP: Cover face with both hands")
+        print("🚀 Starting Head Circle Gesture-Controlled Heart Rate Detection")
+        print("🔄 Head Circle Gesture Controls:")
+        print("   🔄 START/STOP: Draw a complete circle with your head")
+        print("   🔄 Same gesture toggles between start and stop")
         print("=" * 60)
         
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -1413,18 +1463,18 @@ class GestureControlledHeartRateApp:
 
 # 🎯 MAIN ENTRY POINT
 def main():
-    print("💓 HeartSense Pro - Gesture-Controlled Heart Rate Detection")
+    print("💓 HeartSense Pro - Head Circle Gesture-Controlled Heart Rate Detection")
     print("=" * 80)
     print("🎨 Features:")
     print("   • Complete Click-Free Interface")
-    print("   • Advanced Gesture Recognition (MediaPipe)")
+    print("   • Advanced Head Circle Gesture Detection (MediaPipe)")
     print("   • Intelligent State Machine")
     print("   • Enhanced Heartbeat Visualizations")
     print("   • Real-time Quality Indicators")
     print("   • Apple-Inspired Glassmorphic Design")
-    print("\n🤚 Gesture Controls:")
-    print("   ▶️  START: Left hand open left + Right hand open right")
-    print("   ⏹️  STOP: Both hands covering face")
+    print("\n🔄 Head Circle Gesture Controls:")
+    print("   🔄 START/STOP: Draw a complete circle with your head")
+    print("   🔄 Same gesture toggles between start and stop")
     print("=" * 80)
     
     # Check dependencies
@@ -1444,9 +1494,9 @@ def main():
     else:
         print("✅ All dependencies available")
     
-    # Launch the gesture-controlled app
+    # Launch the head circle gesture-controlled app
     print("\n🚀 Launching application...")
-    app = GestureControlledHeartRateApp()
+    app = HeadCircleGestureControlledHeartRateApp()
     app.run()
 
 
