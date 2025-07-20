@@ -306,107 +306,88 @@ class RetroDuckHuntGame:
         self.screen_width = screen_width
         self.screen_height = screen_height
         
-        # Initialize MediaPipe Hands with better settings
-        self.mp_hands = mp.solutions.hands
-        self.hands = self.mp_hands.Hands(
-            max_num_hands=1,
-            min_detection_confidence=0.7,  # Lowered for better detection
-            min_tracking_confidence=0.5    # Lowered for better tracking
-        )
-        self.mp_drawing = mp.solutions.drawing_utils
-        
         # Game state
         self.round = 1
         self.level = 1
         self.score = 0
         self.shots_fired = 0
-        self.shots_per_round = 6  # Base shots per round
         self.ducks_shot = 0
         self.ducks_missed = 0
-        self.ducks_per_round = 3  # Base ducks per round
-        
-        # Game completion state
+        self.ducks_spawned_this_round = 0
+        self.ducks_escaped_this_round = 0
+        self.total_ducks_this_round = 0
         self.game_completed = False
         self.game_won = False
         self.round_complete = False
-        self.ducks_escaped_this_round = 0
-        self.total_ducks_this_round = 0
-        self.win_threshold = 0.5  # 50% of ducks must be shot to win
+        self.can_shoot = True
+        self.last_shot_time = 0
+        self.last_gesture_time = 0  # Add missing variable
+        self.duck_spawn_timer = time.time()
+        self.round_start_time = time.time()
+        self.shot_cooldown_time = 0.3  # Cooldown between shots
+        
+        # Win condition
+        self.win_threshold = 0.5  # 50% accuracy required
         
         # Duck management
         self.ducks = []
-        self.max_ducks_on_screen = 2  # Base max ducks on screen
-        self.duck_spawn_timer = 0
-        self.duck_spawn_interval = 2.0  # Base spawn interval
-        self.ducks_spawned_this_round = 0
-        self.ducks_escaped_this_round = 0
-        self.round_complete = False
-        
-        # Enhanced shooting mechanics
-        self.can_shoot = True
-        self.shot_cooldown_time = 0.3
-        self.last_shot_time = 0
-        
-        # NEW: Quarter-circle shooting gesture tracking
-        self.thumb_positions = []  # Store recent thumb positions
-        self.max_thumb_history = 10  # Keep last 10 positions
-        self.shooting_gesture_active = False
-        self.shooting_gesture_start_time = 0
-        self.shooting_gesture_duration = 0.5  # Max time for shooting gesture
-        self.last_thumb_position = None
-        self.thumb_gesture_start_pos = None
-        self.thumb_gesture_progress = 0  # 0-1 progress of quarter circle
-        
-        # Hand tracking with gesture stability
-        self.hand_position = None
-        self.gun_position = None
-        self.aiming = False
-        self.gesture_stable_time = 0
-        self.last_gesture_time = 0
-        
-        # Improved index finger detection
-        self.index_finger_detected = False
-        self.last_index_position = None
-        self.index_stability_threshold = 0.02  # Tolerance for index finger detection
-        
-        # Cursor stabilization
-        self.cursor_smoothing_factor = 0.3  # Lower = smoother cursor
-        self.cursor_stability_threshold = 5  # Pixels - movement below this is ignored
-        self.smoothed_cursor_position = None
-        self.cursor_stable_time = 0
-        self.last_cursor_position = None
-        
-        # Aim stabilization during shooting
-        self.aim_lock_active = False
-        self.aim_lock_position = None
-        self.aim_lock_start_time = 0
-        self.aim_lock_duration = 0.5  # Lock aim for 0.5 seconds during shooting gesture
-        self.shooting_gesture_detected = False
-        
-        # Background objects for more visual interest
-        self.clouds = []
-        self.trees = []
-        self.bushes = []
-        self.grass_animation_time = 0
-        self.grass_animation_speed = 0.1  # Much slower grass animation
-        
-        # Initialize background objects
-        self.initialize_background_objects()
+        self.duck_spawn_interval = 1.0
+        self.ducks_per_round = 15
+        self.max_ducks_on_screen = 4
+        self.shots_per_round = 20
         
         # Visual effects
         self.shots = []
         self.hit_effects = []
         self.muzzle_flashes = []
         
+        # Hand tracking
+        self.hands = mp.solutions.hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.5
+        )
+        
+        # Cursor stabilization
+        self.smoothed_cursor_position = None
+        self.last_cursor_position = None
+        self.index_finger_detected = False
+        self.last_index_position = None
+        self.index_stability_threshold = 0.02
+        self.cursor_stability_threshold = 5  # Pixels - movement below this is ignored
+        self.cursor_smoothing_factor = 0.3  # Lower = smoother cursor
+        
+        # Aim stabilization
+        self.aim_lock_active = False
+        self.aim_lock_position = None
+        self.aim_lock_start_time = 0
+        self.aim_lock_duration = 0.5  # Lock aim for 0.5 seconds during shooting
+        self.shooting_gesture_detected = False
+        
+        # Quarter-circle gesture detection
+        self.thumb_positions = []
+        self.max_thumb_history = 10
+        
+        # Background objects
+        self.clouds = []
+        self.trees = []
+        self.bushes = []
+        self.grass_animation_time = 0
+        self.grass_animation_speed = 0.3  # Much slower grass animation
+        
+        # UI elements
+        self.hand_position = None
+        self.gun_position = None
+        self.aiming = False
+        self.thumb_trigger_active = False
+        
         # Back button
-        self.back_button = BackButton(screen_width, screen_height)
+        self.back_button = BackButton()
         
-        # Game timing
-        self.game_start_time = time.time()
-        self.round_start_time = time.time()
-        
-        # Initialize level settings
+        # Initialize everything
         self.update_level_settings()
+        self.initialize_background_objects()
         
     def update_level_settings(self):
         """Update game settings based on current level"""
@@ -530,8 +511,11 @@ class RetroDuckHuntGame:
         if self.game_completed:
             return
             
-        # Check if all ducks are gone (either shot or escaped)
-        if len(self.ducks) == 0 and self.ducks_spawned_this_round >= self.ducks_per_round:
+        # Check if all ducks are gone (either shot or escaped) and we've spawned all ducks for this round
+        if (len(self.ducks) == 0 and 
+            self.ducks_spawned_this_round >= self.ducks_per_round and
+            self.ducks_spawned_this_round > 0):  # Make sure we actually spawned ducks
+            
             # Calculate win condition: must shoot at least 50% of ducks
             total_ducks = self.ducks_shot + self.ducks_escaped_this_round
             if total_ducks > 0:
@@ -546,6 +530,7 @@ class RetroDuckHuntGame:
                 
                 self.game_completed = True
                 self.round_complete = True
+                print(f"🏁 Game completed! Final score: {self.score}")
     
     def reset_game(self):
         """Reset the game for a new round"""
@@ -1031,10 +1016,20 @@ class RetroDuckHuntGame:
                 else:  # 40% chance
                     duck_type = "normal"
             else:
-                # Level 1: mostly normal ducks with some red
-                if rand_val < 0.20:  # 20% chance
+                # Level 1: Include colored ducks from the start!
+                if rand_val < 0.05:  # 5% chance for purple (rare)
+                    duck_type = "purple"
+                elif rand_val < 0.15:  # 10% chance for golden
+                    duck_type = "golden"
+                elif rand_val < 0.25:  # 10% chance for silver
+                    duck_type = "silver"
+                elif rand_val < 0.40:  # 15% chance for blue
+                    duck_type = "blue"
+                elif rand_val < 0.55:  # 15% chance for green
+                    duck_type = "green"
+                elif rand_val < 0.70:  # 15% chance for red
                     duck_type = "red"
-                else:  # 80% chance
+                else:  # 30% chance for normal
                     duck_type = "normal"
             
             duck = Duck(self.screen_width, self.screen_height, duck_type, self.level)
@@ -1076,6 +1071,12 @@ class RetroDuckHuntGame:
         
         # Update total ducks count
         self.total_ducks_this_round = self.ducks_shot + self.ducks_escaped_this_round
+        
+        # Debug output for game completion tracking
+        if self.ducks_spawned_this_round >= self.ducks_per_round and len(self.ducks) == 0:
+            print(f"🔍 Game completion check: Spawned {self.ducks_spawned_this_round}/{self.ducks_per_round}, "
+                  f"Shot {self.ducks_shot}, Escaped {self.ducks_escaped_this_round}, "
+                  f"Ducks on screen: {len(self.ducks)}")
         
         # Update background objects
         self.update_background_objects()
@@ -1531,6 +1532,7 @@ def main():
                     game.aiming = True
                     game.gun_position = gun_pos
                     game.thumb_trigger_active = shooting_gesture
+                    game.last_gesture_time = time.time()  # Update gesture time
                     
                     # Handle button interactions if game is completed
                     if game.game_completed and shooting_gesture:
