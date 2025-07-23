@@ -13,6 +13,7 @@ import pygame
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
+import sqlite3
 
 class AppState(Enum):
     """Application state enumeration"""
@@ -232,8 +233,12 @@ class AppStore:
         
         # Initialize camera with fallback
         self.cap = None
-        self.current_camera_index = 0
-        self.select_camera(start_index=0)
+        self.config_db_path = 'appstore_config.db'
+        self._init_config_db()
+        self.current_camera_index = int(self.get_config('current_camera_index', 0))
+        self.current_game = self.get_config('current_game', '')
+        self.current_camera_name = ''
+        self.select_camera(start_index=self.current_camera_index)
         
         # App Store state
         self.games: List[GameCard] = []
@@ -360,6 +365,20 @@ class AppStore:
         # Transition to IDLE when ready
         self.set_state(AppState.IDLE, "App store ready")
     
+    def _init_config_db(self):
+        self.config_conn = sqlite3.connect(self.config_db_path)
+        self.config_conn.execute('''CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT)''')
+        self.config_conn.commit()
+
+    def set_config(self, key, value):
+        self.config_conn.execute('INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)', (key, str(value)))
+        self.config_conn.commit()
+
+    def get_config(self, key, default=None):
+        cur = self.config_conn.execute('SELECT value FROM config WHERE key=?', (key,))
+        row = cur.fetchone()
+        return row[0] if row else default
+
     def load_demo_games(self):
         """Load games from games.json file"""
         try:
@@ -707,6 +726,7 @@ class AppStore:
         self.set_state(AppState.GAME_LOADING, f"Loading {game.name}...")
         self.selected_game = game
         self.loading_start_time = time.time()
+        self.set_config('current_game', game.module_path)
         
         def run_game():
             try:
@@ -803,6 +823,12 @@ class AppStore:
         self.draw_swipe_indicators(surface)
         self.draw_page_indicator(surface)
         self.draw_soft_cursor(surface)
+        # Draw camera info at top left
+        cam_info = f"Camera: {self.current_camera_index}"
+        if self.current_camera_name:
+            cam_info += f" ({self.current_camera_name})"
+        cam_surface = self.small_font.render(cam_info, True, (180, 180, 180))
+        surface.blit(cam_surface, (10, 10))
 
     def draw_games(self, surface):
         start_index = self.current_page * self.games_per_page
@@ -1000,9 +1026,8 @@ class AppStore:
         for camera_index in range(start_index, start_index + 3):  # Try 3 cameras from start_index
             print(f"📹 Trying camera index {camera_index % 3}...")
             cap = cv2.VideoCapture(camera_index % 3)
+            camera_name = None
             if cap.isOpened():
-                # Check camera name to skip OBS cameras
-                camera_name = None
                 try:
                     if hasattr(cap, 'getBackendName') and cap.getBackendName() == 'AVFoundation':
                         import subprocess
@@ -1039,7 +1064,9 @@ class AppStore:
                     print(f"✅ Camera {camera_index % 3} working")
                     self.cap = cap
                     self.current_camera_index = camera_index % 3
-                    # Set camera properties
+                    self.current_camera_name = camera_name or f"Camera {camera_index % 3}"
+                    self.set_config('current_camera_index', self.current_camera_index)
+                    self.set_config('current_camera_name', self.current_camera_name)
                     self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.screen_width)
                     self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.screen_height)
                     self.cap.set(cv2.CAP_PROP_FPS, 30)
