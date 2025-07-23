@@ -8,31 +8,57 @@ from screeninfo import get_monitors
 from cvzone.HandTrackingModule import HandDetector
 import cvzone
 import argparse
-
+import os
 # Initialize pygame mixer
 pygame.mixer.init()
 
 # Load sound effects
+# Resources are in the src/spacejunk folder
+
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Helper function to load a sound file safely
+def load_sound(filename):
+    path = os.path.join(current_dir, filename)
+    if os.path.exists(path):
+        try:
+            sound = pygame.mixer.Sound(path)
+            print(f"Loaded sound: {filename}")
+            return sound
+        except Exception as e:
+            print(f"Error loading sound {filename}: {e}")
+            return None
+    else:
+        print(f"Sound file not found: {filename}")
+        return None
+
+# Load sound effects
 try:
-    shoot_sound = pygame.mixer.Sound("Resources/shoot.mp3")
-    explosion_sound = pygame.mixer.Sound("Resources/explosion.mp3")
-    game_over_sound = pygame.mixer.Sound("Resources/game_over.mp3")
-except:
-    print("Warning: Sound files not found. Game will run without sound.")
+    shoot_sound = load_sound("shoot.mp3")
+    explosion_sound = load_sound("explosion.mp3")
+    game_over_sound = load_sound("game_over.mp3")
+except Exception as e:
+    print(f"Warning: Error loading sound files: {e}. Game will run without sound.")
     shoot_sound = None
     explosion_sound = None
     game_over_sound = None
 
 # Load background image
 try:
-    background_img = cv2.imread("Resources/Background.png")
-    if background_img is None:
-        print("Warning: Background image not found. Using black background.")
-        background_img = np.zeros((720, 1280, 3), dtype=np.uint8)
+    bg_path = os.path.join(current_dir, "space.png")
+    if os.path.exists(bg_path):
+        background_img = cv2.imread(bg_path)
+        if background_img is None:
+            print(f"Warning: Background image file found but could not be loaded: {bg_path}. Using black background.")
+            background_img = np.zeros((720, 1280, 3), dtype=np.uint8)
+        else:
+            background_img = cv2.resize(background_img, (1280, 720))
+            print(f"Loaded background image: space.png")
     else:
-        background_img = cv2.resize(background_img, (1280, 720))
-except:
-    print("Warning: Could not load background image. Using black background.")
+        print(f"Warning: Background image not found: {bg_path}. Using black background.")
+        background_img = np.zeros((720, 1280, 3), dtype=np.uint8)
+except Exception as e:
+    print(f"Warning: Could not load background image: {e}. Using black background.")
     background_img = np.zeros((720, 1280, 3), dtype=np.uint8)
 
 class Bullet:
