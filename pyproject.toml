@@ -39,7 +39,9 @@ dependencies = [
     "cairosvg",
     "pillow",
     "cairocffi",
-    "wand"
+    "wand",
+    "opentelemetry-api",
+    "opentelemetry-sdk"
 ]
 
 [project.scripts]

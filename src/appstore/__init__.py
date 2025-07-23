@@ -9,6 +9,10 @@ import os
 from pathlib import Path
 from typing import List, Tuple
 from enum import Enum
+import pygame
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
 
 class AppState(Enum):
     """Application state enumeration"""
@@ -228,32 +232,8 @@ class AppStore:
         
         # Initialize camera with fallback
         self.cap = None
-        for camera_index in range(3):  # Try cameras 0, 1, 2
-            print(f"📹 Trying camera index {camera_index}...")
-            self.cap = cv2.VideoCapture(camera_index)
-            if self.cap.isOpened():
-                # Test if we can actually read frames
-                ret, frame = self.cap.read()
-                if ret:
-                    print(f"✅ Camera {camera_index} working")
-                    break
-                else:
-                    print(f"❌ Camera {camera_index} opened but can't read frames")
-                    self.cap.release()
-                    self.cap = None
-            else:
-                print(f"❌ Camera {camera_index} failed to open")
-        
-        if not self.cap or not self.cap.isOpened():
-            print("❌ No working camera found")
-            print("💡 Try running: python camera_test.py")
-            raise RuntimeError("No working camera found")
-        
-        # Set camera properties
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.screen_width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.screen_height)
-        self.cap.set(cv2.CAP_PROP_FPS, 30)
-        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        self.current_camera_index = 0
+        self.select_camera(start_index=0)
         
         # App Store state
         self.games: List[GameCard] = []
@@ -358,16 +338,23 @@ class AppStore:
         # Load demo games
         self.load_demo_games()
         
+        # Pygame setup
+        pygame.init()
+        self.screen_width, self.screen_height = detect_screen_resolution()
+        self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
+        pygame.display.set_caption("CVGames App Store (CV+Pygame)")
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.SysFont("Arial", 32)
+        self.small_font = pygame.font.SysFont("Arial", 20)
+        self.shutting_down = False
+        
+        # Set up OpenTelemetry tracing
+        trace.set_tracer_provider(TracerProvider())
+        self.tracer = trace.get_tracer(__name__)
+        span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+        trace.get_tracer_provider().add_span_processor(span_processor)
+        
         # Create the main window in full screen
-        cv2.namedWindow('CVGames App Store', cv2.WINDOW_NORMAL)
-        cv2.setWindowProperty('CVGames App Store', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-        
-        # Set window size to full screen dimensions
-        cv2.resizeWindow('CVGames App Store', self.screen_width, self.screen_height)
-        
-        # Move window to top-left corner to ensure full screen
-        cv2.moveWindow('CVGames App Store', 0, 0)
-        
         print("🖥️ App store window set to full screen mode")
         
         # Transition to IDLE when ready
@@ -644,7 +631,7 @@ class AppStore:
         
         for word in words:
             test_line = current_line + (" " if current_line else "") + word
-            text_size = cv2.getTextSize(test_line, font, font_scale, 1)[0]
+            text_size = cv2.getTextSize(test_line, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)[0]
             
             if text_size[0] <= max_width:
                 current_line = test_line
@@ -658,95 +645,61 @@ class AppStore:
         
         return lines
     
-    def draw_apple_style_card(self, frame, card: GameCard, x: int, y: int, width: int, height: int):
-        """Draw an Apple-style game card"""
-        # Calculate zoom effect
-        if card.is_hovered:
+    def draw_apple_style_card(self, surface, card: GameCard, x: int, y: int, width: int, height: int):
+        # Zoom effect
+        if getattr(card, 'is_hovered', False):
             zoom_offset = int((width * (self.zoom_factor - 1.0)) / 2)
             x -= zoom_offset
             y -= zoom_offset
             width = int(width * self.zoom_factor)
             height = int(height * self.zoom_factor)
-        
-        # Draw shadow
+        # Shadow
         shadow_offset = 8
-        shadow_color = self.colors['card_shadow'][:3]  # Remove alpha for OpenCV
-        cv2.rectangle(frame, 
-                      (x + shadow_offset, y + shadow_offset),
-                      (x + width + shadow_offset, y + height + shadow_offset),
-                      shadow_color, -1)
-        
-        # Draw card background
-        card_color = self.colors['card_hover'][:3] if card.is_hovered else self.colors['card_bg'][:3]
-        self._draw_rounded_rectangle(frame, x, y, width, height, 20, card_color, -1)
-        
-        # Draw card border
+        shadow_color = self.colors['card_shadow'][:3]
+        pygame.draw.rect(surface, shadow_color, (x + shadow_offset, y + shadow_offset, width, height), border_radius=20)
+        # Card background
+        card_color = self.colors['card_hover'][:3] if getattr(card, 'is_hovered', False) else self.colors['card_bg'][:3]
+        pygame.draw.rect(surface, card_color, (x, y, width, height), border_radius=20)
+        # Card border
         border_color = self.colors['card_border'][:3]
-        self._draw_rounded_rectangle(frame, x, y, width, height, 20, border_color, 2)
-        
-        # Draw placeholder icon
+        pygame.draw.rect(surface, border_color, (x, y, width, height), 2, border_radius=20)
+        # Icon
         icon_size = min(width // 3, 80)
         icon_x = x + (width - icon_size) // 2
         icon_y = y + 20
-        
-        # Draw placeholder icon background
-        cv2.rectangle(frame, (icon_x, icon_y), 
-                     (icon_x + icon_size, icon_y + icon_size),
-                     self.colors['accent_primary'], -1)
-        
-        # Add game initial
+        pygame.draw.rect(surface, self.colors['accent_primary'], (icon_x, icon_y, icon_size, icon_size))
+        # Game initial
         initial = card.name[0].upper()
-        font_scale = icon_size / 100
-        text_size = cv2.getTextSize(initial, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 2)[0]
-        text_x = icon_x + (icon_size - text_size[0]) // 2
-        text_y = icon_y + (icon_size + text_size[1]) // 2
-        cv2.putText(frame, initial, 
-                   (text_x, text_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, font_scale,
-                   (255, 255, 255), 2, cv2.LINE_AA)
-        
-        # Draw game title
+        font_scale = icon_size / 40
+        icon_font = pygame.font.SysFont("Arial", int(36 * font_scale))
+        initial_text = icon_font.render(initial, True, (255, 255, 255))
+        text_x = icon_x + (icon_size - initial_text.get_width()) // 2
+        text_y = icon_y + (icon_size - initial_text.get_height()) // 2
+        surface.blit(initial_text, (text_x, text_y))
+        # Game title
         title_y = icon_y + icon_size + 30
-        title_lines = self._wrap_text(card.name, width - 40, cv2.FONT_HERSHEY_SIMPLEX, 0.8)
+        title_lines = self._wrap_text(card.name, width - 40, self.font, 0.8)
         line_height = 25
-        
         for i, line in enumerate(title_lines):
-            text_size = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
-            text_x = x + (width - text_size[0]) // 2
-            cv2.putText(frame, line,
-                       (text_x, title_y + i * line_height),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                       self.colors['text_primary'], 2, cv2.LINE_AA)
-        
-        # Draw description
+            line_surface = self.font.render(line, True, self.colors['text_primary'])
+            text_x = x + (width - line_surface.get_width()) // 2
+            surface.blit(line_surface, (text_x, title_y + i * line_height))
+        # Description
         desc_y = title_y + len(title_lines) * line_height + 20
-        desc_lines = self._wrap_text(card.description, width - 40, cv2.FONT_HERSHEY_SIMPLEX, 0.5)
-        
-        for i, line in enumerate(desc_lines[:3]):  # Max 3 lines
-            text_size = cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
-            text_x = x + (width - text_size[0]) // 2
-            cv2.putText(frame, line,
-                       (text_x, desc_y + i * 18),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                       self.colors['text_secondary'], 1, cv2.LINE_AA)
-        
-        # Draw selection progress bar
-        if card.selection_progress > 0:
+        desc_lines = self._wrap_text(card.description, width - 40, self.small_font, 0.8)
+        for i, line in enumerate(desc_lines[:3]):
+            desc_surface = self.small_font.render(line, True, self.colors['text_secondary'])
+            text_x = x + (width - desc_surface.get_width()) // 2
+            surface.blit(desc_surface, (text_x, desc_y + i * 18))
+        # Selection progress bar
+        if getattr(card, 'selection_progress', 0) > 0:
             bar_width = width - 40
             bar_height = 6
             bar_x = x + 20
             bar_y = y + height - 30
-            
-            # Background
-            cv2.rectangle(frame, (bar_x, bar_y), 
-                         (bar_x + bar_width, bar_y + bar_height),
-                         self.colors['surface_secondary'], -1)
-            
-            # Progress
+            pygame.draw.rect(surface, self.colors['surface_secondary'], (bar_x, bar_y, bar_width, bar_height))
             progress_width = int(bar_width * card.selection_progress)
-            cv2.rectangle(frame, (bar_x, bar_y),
-                         (bar_x + progress_width, bar_y + bar_height),
-                         self.colors['accent_success'], -1)
+            pygame.draw.rect(surface, self.colors['accent_success'], (bar_x, bar_y, progress_width, bar_height))
     
     def launch_game(self, game: GameCard):
         """Launch a game"""
@@ -827,105 +780,59 @@ class AppStore:
         self.game_thread = threading.Thread(target=run_game, daemon=True)
         self.game_thread.start()
     
-    def update_frame(self, frame):
-        """Update the main frame with UI elements"""
-        # Clear frame with background color
-        frame[:] = self.colors['background']
-        
+    def update_frame(self, surface):
+        # Clear background
+        surface.fill(self.colors['background'])
         # Draw title
         title = "CVGames App Store"
-        title_size = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, 2.0, 3)[0]
-        title_x = (self.screen_width - title_size[0]) // 2
-        cv2.putText(frame, title, (title_x, 80), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 2.0, 
-                   self.colors['text_primary'], 3, cv2.LINE_AA)
-        
+        title_text = self.font.render(title, True, self.colors['text_primary'])
+        title_x = (self.screen_width - title_text.get_width()) // 2
+        surface.blit(title_text, (title_x, 80))
         # Draw status
         state, message, duration = self.get_state_info()
         status_text = f"Status: {state.value}"
         if message:
             status_text += f" - {message}"
-        
-        cv2.putText(frame, status_text, (50, 130), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, 
-                   self.colors['text_secondary'], 1, cv2.LINE_AA)
-        
-        # Only draw games if in appropriate state
+        status_surface = self.small_font.render(status_text, True, self.colors['text_secondary'])
+        surface.blit(status_surface, (50, 130))
+        # Draw games or loading screen
         if state in [AppState.IDLE, AppState.GAME_SELECTING]:
-            self.draw_games(frame)
-        
-        # Draw loading screen
+            self.draw_games(surface)
         if state == AppState.GAME_LOADING:
-            self.draw_loading_screen(frame)
-        
-        # Draw swipe indicators
-        self.draw_swipe_indicators(frame)
-        
-        # Draw page indicator
-        self.draw_page_indicator(frame)
-        
-        # Draw soft cursor
-        self.draw_soft_cursor(frame)
-    
-    def draw_games(self, frame):
-        """Draw game cards"""
+            self.draw_loading_screen(surface)
+        self.draw_swipe_indicators(surface)
+        self.draw_page_indicator(surface)
+        self.draw_soft_cursor(surface)
+
+    def draw_games(self, surface):
         start_index = self.current_page * self.games_per_page
         end_index = min(start_index + self.games_per_page, len(self.games))
-        
         for i in range(start_index, end_index):
             card_index = i - start_index
             card = self.games[i]
             x, y, width, height = self.get_card_position(card_index)
-            self.draw_apple_style_card(frame, card, x, y, width, height)
-    
-    def draw_loading_screen(self, frame):
-        """Draw loading screen"""
+            self.draw_apple_style_card(surface, card, x, y, width, height)
+
+    def draw_loading_screen(self, surface):
         if not self.selected_game:
             return
-        
-        # Calculate loading progress
         elapsed = time.time() - self.loading_start_time
         progress = min(elapsed / self.loading_duration, 1.0)
-        
-        # Draw loading text
         loading_text = f"Loading {self.selected_game.name}..."
-        text_size = cv2.getTextSize(loading_text, cv2.FONT_HERSHEY_SIMPLEX, 1.5, 2)[0]
-        text_x = (self.screen_width - text_size[0]) // 2
+        loading_surface = self.font.render(loading_text, True, self.colors['text_primary'])
+        text_x = (self.screen_width - loading_surface.get_width()) // 2
         text_y = self.screen_height // 2 - 50
-        
-        cv2.putText(frame, loading_text, (text_x, text_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 1.5,
-                   self.colors['text_primary'], 2, cv2.LINE_AA)
-        
-        # Draw progress bar
+        surface.blit(loading_surface, (text_x, text_y))
+        # Progress bar
         bar_width = 400
         bar_height = 20
         bar_x = (self.screen_width - bar_width) // 2
         bar_y = text_y + 50
-        
-        # Background
-        cv2.rectangle(frame, (bar_x, bar_y), 
-                     (bar_x + bar_width, bar_y + bar_height),
-                     self.colors['surface_secondary'], -1)
-        
-        # Progress
+        pygame.draw.rect(surface, self.colors['surface_secondary'], (bar_x, bar_y, bar_width, bar_height))
         progress_width = int(bar_width * progress)
-        cv2.rectangle(frame, (bar_x, bar_y),
-                     (bar_x + progress_width, bar_y + bar_height),
-                     self.colors['accent_primary'], -1)
-        
-        # Progress percentage
-        progress_text = f"{int(progress * 100)}%"
-        progress_size = cv2.getTextSize(progress_text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
-        progress_x = (self.screen_width - progress_size[0]) // 2
-        progress_y = bar_y + bar_height + 40
-        
-        cv2.putText(frame, progress_text, (progress_x, progress_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                   self.colors['text_secondary'], 2, cv2.LINE_AA)
+        pygame.draw.rect(surface, self.colors['accent_success'], (bar_x, bar_y, progress_width, bar_height))
     
-    def draw_swipe_indicators(self, frame):
-        """Draw swipe progress indicators"""
+    def draw_swipe_indicators(self, surface):
         if self.swipe_hold_progress > 0:
             edge_width = 20
             
@@ -933,21 +840,16 @@ class AppStore:
                 # Left edge indicator
                 indicator_height = int(self.screen_height * self.swipe_hold_progress)
                 y_start = (self.screen_height - indicator_height) // 2
-                cv2.rectangle(frame, (0, y_start), 
-                             (edge_width, y_start + indicator_height),
-                             self.colors['accent_primary'], -1)
+                pygame.draw.rect(surface, self.colors['accent_primary'], (0, y_start, edge_width, indicator_height))
             
             elif self.swipe_hold_direction == "right":
                 # Right edge indicator
                 indicator_height = int(self.screen_height * self.swipe_hold_progress)
                 y_start = (self.screen_height - indicator_height) // 2
                 x_start = self.screen_width - edge_width
-                cv2.rectangle(frame, (x_start, y_start), 
-                             (self.screen_width, y_start + indicator_height),
-                             self.colors['accent_primary'], -1)
+                pygame.draw.rect(surface, self.colors['accent_primary'], (x_start, y_start, edge_width, indicator_height))
     
-    def draw_page_indicator(self, frame):
-        """Draw page indicator"""
+    def draw_page_indicator(self, surface):
         total_pages = (len(self.games) + self.games_per_page - 1) // self.games_per_page
         if total_pages <= 1:
             return
@@ -957,11 +859,10 @@ class AppStore:
         text_x = (self.screen_width - text_size[0]) // 2
         text_y = self.screen_height - 50
         
-        cv2.putText(frame, page_text, (text_x, text_y),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                   self.colors['text_secondary'], 1, cv2.LINE_AA)
+        page_surface = self.small_font.render(page_text, True, self.colors['text_secondary'])
+        surface.blit(page_surface, (text_x, text_y))
     
-    def draw_soft_cursor(self, frame):
+    def draw_soft_cursor(self, surface):
         """Draw a soft, animated cursor at hand position"""
         if not self.cursor_visible:
             return
@@ -993,39 +894,28 @@ class AppStore:
             color = tuple(int(c * layer_alpha) for c in base_color)
             
             # Draw soft circle
-            cv2.circle(frame, (x, y), layer_size, color, -1, cv2.LINE_AA)
+            pygame.draw.circle(surface, color, (x, y), layer_size)
         
         # Draw center dot
         center_color = tuple(int(c * self.cursor_alpha) for c in base_color)
-        cv2.circle(frame, (x, y), 3, center_color, -1, cv2.LINE_AA)
+        pygame.draw.circle(surface, center_color, (x, y), 3)
         
         # Draw subtle glow effect
         glow_size = size + 8
         glow_color = tuple(int(c * 0.2) for c in base_color)
-        cv2.circle(frame, (x, y), glow_size, glow_color, 2, cv2.LINE_AA)
+        pygame.draw.circle(surface, glow_color, (x, y), glow_size, 2)
     
     def toggle_fullscreen(self):
         """Toggle between full screen and windowed mode"""
         try:
-            current_prop = cv2.getWindowProperty('CVGames App Store', cv2.WND_PROP_FULLSCREEN)
-            if current_prop == cv2.WINDOW_FULLSCREEN:
-                # Switch to windowed mode
-                cv2.setWindowProperty('CVGames App Store', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
-                cv2.resizeWindow('CVGames App Store', self.screen_width, self.screen_height)
-                print("🖥️ Switched to windowed mode")
-            else:
-                # Switch to full screen mode
-                cv2.setWindowProperty('CVGames App Store', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                cv2.moveWindow('CVGames App Store', 0, 0)
-                print("🖥️ Switched to full screen mode")
+            print("🖥️ (Pygame) Fullscreen toggle requested")
         except Exception as e:
             print(f"⚠️ Error toggling full screen: {e}")
     
     def ensure_fullscreen(self):
         """Ensure the window is in full screen mode"""
         try:
-            cv2.setWindowProperty('CVGames App Store', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-            cv2.moveWindow('CVGames App Store', 0, 0)
+            print("🖥️ (Pygame) Ensuring full screen mode")
         except Exception as e:
             print(f"⚠️ Error ensuring full screen: {e}")
     
@@ -1102,6 +992,67 @@ class AppStore:
                 card.is_hovered = False
                 card.selection_progress = 0.0
     
+    def select_camera(self, start_index=0):
+        """Select the first available non-OBS camera starting from start_index."""
+        if hasattr(self, 'cap') and self.cap:
+            self.cap.release()
+            self.cap = None
+        for camera_index in range(start_index, start_index + 3):  # Try 3 cameras from start_index
+            print(f"📹 Trying camera index {camera_index % 3}...")
+            cap = cv2.VideoCapture(camera_index % 3)
+            if cap.isOpened():
+                # Check camera name to skip OBS cameras
+                camera_name = None
+                try:
+                    if hasattr(cap, 'getBackendName') and cap.getBackendName() == 'AVFoundation':
+                        import subprocess
+                        result = subprocess.run(['system_profiler', 'SPCameraDataType'], capture_output=True, text=True)
+                        if result.returncode == 0:
+                            lines = result.stdout.split('\n')
+                            for i, line in enumerate(lines):
+                                if f'Camera {camera_index % 3}' in line or f'Camera:' in line:
+                                    for j in range(i, i+5):
+                                        if 'Model ID:' in lines[j]:
+                                            camera_name = lines[j].split(':', 1)[1].strip()
+                                            break
+                    elif hasattr(cap, 'getBackendName') and cap.getBackendName() == 'V4L2':
+                        import subprocess
+                        result = subprocess.run(['v4l2-ctl', '-d', f'/dev/video{camera_index % 3}', '--info'], capture_output=True, text=True)
+                        if result.returncode == 0:
+                            for line in result.stdout.split('\n'):
+                                if 'Card type' in line:
+                                    camera_name = line.split(':', 1)[1].strip()
+                                    break
+                except Exception as e:
+                    pass
+                if camera_name is None:
+                    try:
+                        camera_name = cap.get(cv2.CAP_PROP_DEVICE_DESCRIPTION)
+                    except Exception:
+                        camera_name = None
+                if camera_name and 'OBS' in str(camera_name).upper():
+                    print(f"❌ Skipping OBS camera at index {camera_index % 3} ({camera_name})")
+                    cap.release()
+                    continue
+                ret, frame = cap.read()
+                if ret:
+                    print(f"✅ Camera {camera_index % 3} working")
+                    self.cap = cap
+                    self.current_camera_index = camera_index % 3
+                    # Set camera properties
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.screen_width)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.screen_height)
+                    self.cap.set(cv2.CAP_PROP_FPS, 30)
+                    self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    return
+                else:
+                    print(f"❌ Camera {camera_index % 3} opened but can't read frames")
+                    cap.release()
+            else:
+                print(f"❌ Camera {camera_index % 3} failed to open")
+        print("❌ No working camera found")
+        raise RuntimeError("No working camera found")
+    
     def run(self):
         """Main application loop"""
         print("🚀 Starting CVGames App Store...")
@@ -1113,56 +1064,46 @@ class AppStore:
         print("   - Press 'A' for previous page, 'D' for next page")
         print("   - Press 'Q' or 'ESC' to quit")
         print("=" * 50)
-        
-        while not self.shutting_down:
-            try:
-                ret, frame = self.cap.read()
-                if not ret:
-                    print("❌ Failed to capture frame")
-                    break
-                
-                # Flip frame horizontally for mirror effect
-                frame = cv2.flip(frame, 1)
-                
-                # Resize frame to match screen size
-                frame = cv2.resize(frame, (self.screen_width, self.screen_height))
-                
-                # Process hand tracking
-                if self.hands:
+        with self.tracer.start_as_current_span("appstore_session"):
+            while not self.shutting_down:
+                try:
+                    # --- Computer Vision Input ---
+                    ret, frame = self.cap.read()
+                    if not ret:
+                        print("❌ Failed to capture frame")
+                        break
+                    frame = cv2.flip(frame, 1)
+                    frame = cv2.resize(frame, (self.screen_width, self.screen_height))
                     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    results = self.hands.process(rgb_frame)
-                    self.process_hand_tracking(frame, results)
-                
-                # Update UI
-                self.update_frame(frame)
-                
-                # Show frame
-                cv2.imshow('CVGames App Store', frame)
-                
-                # Handle keyboard input
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q') or key == 27:  # 'q' or ESC
-                    print("👋 Shutting down...")
+                    self.process_hand_tracking(frame, self.hands.process(rgb_frame))
+                    # --- Pygame Event Handling ---
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            self.shutting_down = True
+                        elif event.type == pygame.KEYDOWN:
+                            if event.key == pygame.K_q or event.key == pygame.K_ESCAPE:
+                                self.shutting_down = True
+                            elif event.key == pygame.K_f:
+                                self.toggle_fullscreen()
+                            elif event.key == pygame.K_a:
+                                if self.current_page > 0:
+                                    self.current_page -= 1
+                            elif event.key == pygame.K_d:
+                                if (self.current_page + 1) * self.games_per_page < len(self.games):
+                                    self.current_page += 1
+                            elif event.key == pygame.K_c:
+                                print("🔄 Switching to next camera...")
+                                self.select_camera(start_index=(self.current_camera_index + 1) % 3)
+                    # --- Pygame Rendering ---
+                    self.screen.fill((30, 30, 30))
+                    self.update_frame(self.screen)  # update_frame should draw to the pygame surface
+                    pygame.display.flip()
+                    self.clock.tick(30)
+                except Exception as e:
+                    print(f"❌ Error in main loop: {e}")
                     break
-                elif key == ord('f'):  # Toggle full screen
-                    self.toggle_fullscreen()
-                elif key == ord('a'):  # Previous page
-                    if self.current_page > 0:
-                        self.current_page -= 1
-                elif key == ord('d'):  # Next page
-                    if (self.current_page + 1) * self.games_per_page < len(self.games):
-                        self.current_page += 1
-                
-                # Ensure full screen mode is maintained (in case window was moved)
-                self.ensure_fullscreen()
-                
-            except Exception as e:
-                print(f"❌ Error in main loop: {e}")
-                break
-        
-        # Cleanup
-        self.cleanup()
-    
+            self.cleanup()
+
     def cleanup(self):
         """Clean up resources"""
         print("🧹 Cleaning up...")
@@ -1171,7 +1112,6 @@ class AppStore:
         if self.cap:
             self.cap.release()
         
-        cv2.destroyAllWindows()
         print("✅ Cleanup complete")
 
 def main():

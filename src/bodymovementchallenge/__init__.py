@@ -3,6 +3,17 @@ import mediapipe as mp
 import numpy as np
 import random
 import time
+import pygame
+import sys
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
+
+# Set up OpenTelemetry tracing
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer(__name__)
+span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+trace.get_tracer_provider().add_span_processor(span_processor)
 
 CHALLENGES = [
     "Raise both hands above your head!",
@@ -25,33 +36,41 @@ class BodyMovementChallenge:
         self.current_challenge = random.choice(CHALLENGES)
         self.challenge_start = time.time()
         self.completed = False
+        with tracer.start_as_current_span("new_challenge"):
+            pass
 
     def check_pose(self, pose_landmarks):
-        # Simple placeholder logic for demo
         if not pose_landmarks:
             return False
-        # Example: if challenge is "Raise both hands above your head!"
         if "hands above" in self.current_challenge:
             left = pose_landmarks.landmark[mp.solutions.pose.PoseLandmark.LEFT_WRIST]
             right = pose_landmarks.landmark[mp.solutions.pose.PoseLandmark.RIGHT_WRIST]
             head = pose_landmarks.landmark[mp.solutions.pose.PoseLandmark.NOSE]
             return left.y < head.y and right.y < head.y
-        # Add more logic for other challenges as needed
-        return random.random() < 0.1  # Randomly succeed for demo
+        return random.random() < 0.1
 
     def update(self, pose_landmarks):
         if not self.completed and self.check_pose(pose_landmarks):
             self.score += 10
             self.completed = True
+            with tracer.start_as_current_span("challenge_completed"):
+                pass
 
-    def draw(self, frame):
-        cv2.putText(frame, f"Challenge: {self.current_challenge}", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
-        cv2.putText(frame, f"Score: {self.score}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+    def draw(self, surface, font, small_font):
+        surface.fill((30, 30, 30))
+        challenge_text = font.render(f"Challenge: {self.current_challenge}", True, (255, 255, 0))
+        score_text = font.render(f"Score: {self.score}", True, (255, 255, 255))
+        surface.blit(score_text, (50, 50))
+        surface.blit(challenge_text, (50, 100))
         if self.completed:
-            cv2.putText(frame, "Success!", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 255, 0), 3)
+            success_text = font.render("Success!", True, (0, 255, 0))
+            surface.blit(success_text, (50, 200))
         else:
-            cv2.putText(frame, "Try to complete the challenge!", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-        cv2.putText(frame, "Press n for next challenge, q to quit", (50, 400), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+            try_text = font.render("Try to complete the challenge!", True, (255, 255, 255))
+            surface.blit(try_text, (50, 200))
+        instr_text = small_font.render("Press n for next challenge, q to quit", True, (255, 255, 255))
+        surface.blit(instr_text, (50, 400))
+
 
 def main():
     mp_pose = mp.solutions.pose
@@ -59,27 +78,45 @@ def main():
     mp_draw = mp.solutions.drawing_utils
     game = BodyMovementChallenge()
     cap = cv2.VideoCapture(0)
-    cv2.namedWindow("Body Movement Challenge", cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty("Body Movement Challenge", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frame = cv2.flip(frame, 1)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = pose.process(rgb)
-        if results.pose_landmarks:
-            mp_draw.draw_landmarks(frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS)
-            game.update(results.pose_landmarks)
-        game.draw(frame)
-        cv2.imshow("Body Movement Challenge", frame)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('n'):
-            game.next_challenge()
+    WIDTH, HEIGHT = 960, 720
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("Body Movement Challenge (CV+Pygame)")
+    font = pygame.font.SysFont("Arial", 36)
+    small_font = pygame.font.SysFont("Arial", 24)
+    clock = pygame.time.Clock()
+    with tracer.start_as_current_span("bodymovement_session"):
+        running = True
+        while running:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame = cv2.flip(frame, 1)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = pose.process(rgb)
+            pose_landmarks = results.pose_landmarks if results.pose_landmarks else None
+            if pose_landmarks:
+                mp_draw.draw_landmarks(frame, pose_landmarks, mp_pose.POSE_CONNECTIONS)
+            game.update(pose_landmarks)
+            # Convert OpenCV frame to Pygame surface for background (optional)
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frame_surface = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+            screen.blit(frame_surface, (0, 0))
+            # Draw overlay UI
+            game.draw(screen, font, small_font)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_q:
+                        running = False
+                    elif event.key == pygame.K_n:
+                        game.next_challenge()
+            pygame.display.flip()
+            clock.tick(30)
     cap.release()
-    cv2.destroyAllWindows()
+    pygame.quit()
+    sys.exit()
 
 if __name__ == "__main__":
     main() 
