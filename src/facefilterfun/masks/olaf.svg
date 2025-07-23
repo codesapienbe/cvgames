@@ -1,0 +1,14 @@
+<svg width="500" height="260" xmlns="http://www.w3.org/2000/svg">
+    <!-- Eyes -->
+    <ellipse cx="200" cy="100" rx="25" ry="38" fill="#fff"/>
+    <ellipse cx="300" cy="100" rx="25" ry="38" fill="#fff"/>
+    <!-- Pupils -->
+    <ellipse cx="210" cy="110" rx="9" ry="14" fill="#222"/>
+    <ellipse cx="290" cy="110" rx="9" ry="14" fill="#222"/>
+    <!-- Orange carrot nose -->
+    <polygon points="250,120 320,140 250,180" fill="#ff913d"/>
+    <!-- Eyebrows -->
+    <rect x="178" y="60" width="38" height="8" fill="#55452c" rx="4"/>
+    <rect x="284" y="60" width="38" height="8" fill="#55452c" rx="4"/>
+  </svg>
+  

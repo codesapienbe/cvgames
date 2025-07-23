@@ -1,0 +1,8 @@
+<svg width="400" height="240" xmlns="http://www.w3.org/2000/svg">
+    <!-- Main face circle -->
+    <ellipse cx="200" cy="120" rx="75" ry="65" fill="#222"/>
+    <!-- Ears -->
+    <ellipse cx="110" cy="45" rx="50" ry="50" fill="#222"/>
+    <ellipse cx="290" cy="45" rx="50" ry="50" fill="#222"/>
+  </svg>
+  

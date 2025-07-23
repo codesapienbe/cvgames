@@ -35,7 +35,11 @@ dependencies = [
     "pyautogui",
     "pyperclip",
     "pytesseract",
-    "screeninfo"
+    "screeninfo",
+    "cairosvg",
+    "pillow",
+    "cairocffi",
+    "wand"
 ]
 
 [project.scripts]
@@ -45,3 +49,4 @@ duckhunt = "duckhunt:main"
 doomhands = "doomhands:main"
 pingpong = "pingpong:main"
 holibowling = "holibowling:main"
+facefilterfun = "facefilterfun:main"

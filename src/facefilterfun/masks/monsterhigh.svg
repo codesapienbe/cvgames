@@ -1,0 +1,13 @@
+<svg width="400" height="300" xmlns="http://www.w3.org/2000/svg">
+    <!-- Skull -->
+    <ellipse cx="200" cy="120" rx="70" ry="55" fill="#fff" />
+    <!-- Eyes -->
+    <ellipse cx="175" cy="125" rx="15" ry="13" fill="#222"/>
+    <ellipse cx="225" cy="125" rx="15" ry="13" fill="#222"/>
+    <!-- Bow -->
+    <rect x="185" y="55" width="30" height="25" rx="10" fill="#eb3991"/>
+    <ellipse cx="200" cy="60" rx="10" ry="8" fill="#fff"/>
+    <!-- Nose -->
+    <ellipse cx="200" cy="145" rx="7" ry="5" fill="#f26aa2"/>
+  </svg>
+  

@@ -1,0 +1,13 @@
+<svg width="500" height="350" xmlns="http://www.w3.org/2000/svg">
+    <ellipse cx="250" cy="80" rx="120" ry="40" fill="#9fd7ef" />
+    <ellipse cx="250" cy="55" rx="16" ry="12" fill="#c1e7ff" />
+    <polygon points="250,22 265,80 235,80" fill="#f7ebff" />
+    <!-- Central snowflake -->
+    <g>
+      <line x1="250" y1="40" x2="250" y2="65" stroke="#81c8f9" stroke-width="2"/>
+      <line x1="245" y1="52" x2="255" y2="52" stroke="#81c8f9" stroke-width="2"/>
+      <line x1="245" y1="47" x2="255" y2="57" stroke="#81c8f9" stroke-width="2"/>
+      <line x1="255" y1="47" x2="245" y2="57" stroke="#81c8f9" stroke-width="2"/>
+    </g>
+  </svg>
+  
