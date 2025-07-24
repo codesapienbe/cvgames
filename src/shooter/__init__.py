@@ -3,6 +3,11 @@ import mediapipe as mp
 import time
 import random
 import numpy as np
+import pygame
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
+import sys
 
 # Initialize MediaPipe Face Mesh for blink and nose tracking
 mp_face = mp.solutions.face_mesh
@@ -16,6 +21,12 @@ if not cap.isOpened():
 
 width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
 height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+# Set up OpenTelemetry tracing
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer(__name__)
+span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+trace.get_tracer_provider().add_span_processor(span_processor)
 
 # Game entities
 spaceship_y = height - 50
@@ -43,87 +54,119 @@ blink_cooldown = False
 
 prev_time = time.time()
 
-# Main loop runs on import
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
-    frame = cv2.flip(frame, 1)
-    now = time.time()
-    dt = now - prev_time
-    prev_time = now
+def main():
+    # --- Pygame Setup ---
+    pygame.init()
+    screen = pygame.display.set_mode((width, height))
+    pygame.display.set_caption("Eye Shooter (CV+Pygame)")
+    font = pygame.font.SysFont("Arial", 36)
+    clock = pygame.time.Clock()
 
-    # Face mesh processing
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = face_mesh.process(rgb)
-
-    blink = False
-    if results.multi_face_landmarks:
-        lm = results.multi_face_landmarks[0].landmark
-        # Nose tip (landmark 1)
-        nose = lm[1]
-        spaceship_x = int(nose.x * width)
-        # Blink: left eye landmarks 159, 145
-        u = lm[159]
-        l = lm[145]
-        if abs(u.y - l.y) < BLINK_THRESHOLD:
-            blink = True
-
-    # Spawn aliens
-    if now - last_spawn > spawn_interval:
-        aliens.append({'x': random.randint(alien_radius, width - alien_radius), 'y': -alien_radius})
-        last_spawn = now
-
-    # Update aliens
-    for a in aliens[:]:
-        a['y'] += alien_speed * dt
-        # Remove if passed bottom
-        if a['y'] > height + alien_radius:
-            aliens.remove(a)
-
-    # Handle blinking to fire bullet
-    if blink and not prev_blink and not blink_cooldown:
-        if not bullet['active']:
-            bullet['x'] = spaceship_x
-            bullet['y'] = spaceship_y - ship_radius
-            bullet['active'] = True
-        blink_cooldown = True
-    if not blink:
-        blink_cooldown = False
-    prev_blink = blink
-
-    # Update bullet
-    if bullet['active']:
-        bullet['y'] -= bullet_speed * dt
-        if bullet['y'] < -bullet_radius:
-            bullet['active'] = False
-
-    # Check collisions
-    if bullet['active']:
-        for a in aliens[:]:
-            if np.hypot(bullet['x'] - a['x'], bullet['y'] - a['y']) < (bullet_radius + alien_radius):
-                aliens.remove(a)
-                bullet['active'] = False
-                score += 1
+    with tracer.start_as_current_span("shooter_session"):
+        running = True
+        while running:
+            ret, frame = cap.read()
+            if not ret:
                 break
+            frame = cv2.flip(frame, 1)
+            now = time.time()
+            dt = now - prev_time
+            prev_time = now
 
-    # Draw spaceship
-    cv2.circle(frame, (spaceship_x, spaceship_y), ship_radius, ship_color, -1)
-    # Draw aliens
-    for a in aliens:
-        cv2.circle(frame, (int(a['x']), int(a['y'])), alien_radius, (0,0,255), -1)
-    # Draw bullet
-    if bullet['active']:
-        cv2.circle(frame, (int(bullet['x']), int(bullet['y'])), bullet_radius, bullet_color, -1)
+            # Face mesh processing
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = face_mesh.process(rgb)
 
-    # UI overlays
-    cv2.putText(frame, f"Score: {score}", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
-    cv2.putText(frame, "Blink to shoot, move head to aim", (10, height - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 1)
+            blink = False
+            if results.multi_face_landmarks:
+                lm = results.multi_face_landmarks[0].landmark
+                # Nose tip (landmark 1)
+                nose = lm[1]
+                spaceship_x = int(nose.x * width)
+                # Blink: left eye landmarks 159, 145
+                u = lm[159]
+                l = lm[145]
+                if abs(u.y - l.y) < BLINK_THRESHOLD:
+                    blink = True
 
-    cv2.imshow("Eye Shooter", frame)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+            # Spawn aliens
+            if now - last_spawn > spawn_interval:
+                with tracer.start_as_current_span("alien_spawn"):
+                    aliens.append({'x': random.randint(alien_radius, width - alien_radius), 'y': -alien_radius})
+                last_spawn = now
 
-# Cleanup
-cap.release()
-cv2.destroyAllWindows()
+            # Update aliens
+            for a in aliens[:]:
+                a['y'] += alien_speed * dt
+                # Remove if passed bottom
+                if a['y'] > height + alien_radius:
+                    aliens.remove(a)
+
+            # Handle blinking to fire bullet
+            if blink and not prev_blink and not blink_cooldown:
+                if not bullet['active']:
+                    with tracer.start_as_current_span("shoot"):
+                        bullet['x'] = spaceship_x
+                        bullet['y'] = spaceship_y - ship_radius
+                        bullet['active'] = True
+                blink_cooldown = True
+            if not blink:
+                blink_cooldown = False
+            prev_blink = blink
+
+            # Update bullet
+            if bullet['active']:
+                bullet['y'] -= bullet_speed * dt
+                if bullet['y'] < -bullet_radius:
+                    bullet['active'] = False
+
+            # Check collisions
+            if bullet['active']:
+                for a in aliens[:]:
+                    if np.hypot(bullet['x'] - a['x'], bullet['y'] - a['y']) < (bullet_radius + alien_radius):
+                        with tracer.start_as_current_span("hit"):
+                            aliens.remove(a)
+                            bullet['active'] = False
+                            score += 1
+                        break
+
+            # Draw spaceship
+            cv2.circle(frame, (spaceship_x, spaceship_y), ship_radius, ship_color, -1)
+            # Draw aliens
+            for a in aliens:
+                cv2.circle(frame, (int(a['x']), int(a['y'])), alien_radius, (0,0,255), -1)
+            # Draw bullet
+            if bullet['active']:
+                cv2.circle(frame, (int(bullet['x']), int(bullet['y'])), bullet_radius, bullet_color, -1)
+
+            # UI overlays
+            cv2.putText(frame, f"Score: {score}", (10,30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
+            cv2.putText(frame, "Blink to shoot, move head to aim", (10, height - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200,200,200), 1)
+
+            # --- Pygame Event Handling ---
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_q:
+                        running = False
+                    elif event.key == pygame.K_r:
+                        with tracer.start_as_current_span("restart_game"):
+                            aliens.clear()
+                            bullet['active'] = False
+                            score = 0
+                            last_spawn = time.time()
+
+            # --- Pygame Rendering ---
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            surf = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+            screen.blit(surf, (0, 0))
+            pygame.display.flip()
+            clock.tick(30)
+
+    cap.release()
+    pygame.quit()
+    sys.exit()
+
+if __name__ == "__main__":
+    main()
