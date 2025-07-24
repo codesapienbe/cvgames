@@ -9,6 +9,9 @@ import cvzone
 import argparse
 import sys
 import os
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
 
 # Loading screen function is defined locally below
 
@@ -236,10 +239,8 @@ def main():
     args = parser.parse_args()
     GAME_WIDTH = 1280
     GAME_HEIGHT = 720
-
     # Show loading screen before initializing the game
     show_loading_screen(GAME_WIDTH, GAME_HEIGHT, duration=3)
-
     game = MarioGame(GAME_WIDTH, GAME_HEIGHT)
     detector = HandDetector(detectionCon=0.8, maxHands=2)
     available_cameras = []
@@ -257,47 +258,87 @@ def main():
         return
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, GAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, GAME_HEIGHT)
+    # Set up OpenTelemetry tracing
+    trace.set_tracer_provider(TracerProvider())
+    tracer = trace.get_tracer(__name__)
+    span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+    trace.get_tracer_provider().add_span_processor(span_processor)
+    # --- Pygame Setup ---
+    import pygame
+    pygame.init()
+    screen = pygame.display.set_mode((GAME_WIDTH, GAME_HEIGHT))
+    pygame.display.set_caption("MediaPipe Mario (CV+Pygame)")
+    font = pygame.font.SysFont("Arial", 36)
+    clock = pygame.time.Clock()
     prev_jump = False
-    while True:
-        success, img = cap.read()
-        if not success:
-            break
-        img = cv2.flip(img, 1)
-        hands, img = detector.findHands(img, flipType=False)
-        # Gesture detection: open hand for movement, fist for jump
-        jump_flag = False
-        left_open = False
-        right_open = False
-        for hand in hands:
-            fingers = detector.fingersUp(hand)
-            if sum(fingers) == 0:
-                jump_flag = True
+    with tracer.start_as_current_span("mariomaster_session"):
+        running = True
+        while running:
+            success, img = cap.read()
+            if not success:
+                break
+            img = cv2.flip(img, 1)
+            hands, img = detector.findHands(img, flipType=False)
+            # Gesture detection: open hand for movement, fist for jump
+            jump_flag = False
+            left_open = False
+            right_open = False
+            for hand in hands:
+                fingers = detector.fingersUp(hand)
+                if sum(fingers) == 0:
+                    jump_flag = True
+                else:
+                    if hand["type"] == "Left":
+                        left_open = True
+                    elif hand["type"] == "Right":
+                        right_open = True
+            # Jump on fist (edge detection)
+            if jump_flag:
+                if not prev_jump:
+                    with tracer.start_as_current_span("jump"):
+                        game.mario.jump()
+                prev_jump = True
             else:
-                if hand["type"] == "Left":
-                    left_open = True
-                elif hand["type"] == "Right":
-                    right_open = True
-        # Jump on fist (edge detection)
-        if jump_flag:
-            if not prev_jump:
-                game.mario.jump()
-            prev_jump = True
-        else:
-            prev_jump = False
-            # Movement: only if not jumping
-            if right_open and not left_open:
-                game.mario.move(1)
-            elif left_open and not right_open:
-                game.mario.move(-1)
-            else:
-                game.mario.move(0)
-        game.update()
-        game.draw(img)
-        cv2.imshow("MediaPipe Mario", img)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+                prev_jump = False
+                # Movement: only if not jumping
+                if right_open and not left_open:
+                    with tracer.start_as_current_span("move_right"):
+                        game.mario.move(1)
+                elif left_open and not right_open:
+                    with tracer.start_as_current_span("move_left"):
+                        game.mario.move(-1)
+                else:
+                    game.mario.move(0)
+            game.update()
+            # Coin collection and game over logging
+            for coin in game.coins:
+                if coin.collected:
+                    with tracer.start_as_current_span("coin_collected"):
+                        pass
+            if game.game_over:
+                with tracer.start_as_current_span("game_over"):
+                    pass
+            game.draw(img)
+            # --- Pygame Event Handling ---
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_q:
+                        running = False
+                    elif event.key == pygame.K_r:
+                        with tracer.start_as_current_span("restart_game"):
+                            game = MarioGame(GAME_WIDTH, GAME_HEIGHT)
+                            prev_jump = False
+            # --- Pygame Rendering ---
+            frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            surf = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+            screen.blit(surf, (0, 0))
+            pygame.display.flip()
+            clock.tick(30)
     cap.release()
-    cv2.destroyAllWindows()
+    pygame.quit()
+    sys.exit()
 
 if __name__ == "__main__":
     main()
