@@ -12,6 +12,10 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
 import threading
 from collections import deque
+import pygame
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
 
 # Import the back button system
 try:
@@ -1038,13 +1042,17 @@ def main():
     parser.add_argument('--windowed', action='store_true', help='Run in windowed mode')
     args = parser.parse_args()
 
+    # Set up OpenTelemetry tracing
+    trace.set_tracer_provider(TracerProvider())
+    tracer = trace.get_tracer(__name__)
+    span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+    trace.get_tracer_provider().add_span_processor(span_processor)
+
     # Initialize camera
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
         print(f"Error: Could not open camera with index {args.camera}")
         exit(-1)
-
-    # Set camera properties for full body tracking
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
     cap.set(cv2.CAP_PROP_FPS, 30)
@@ -1055,15 +1063,14 @@ def main():
     game.config.difficulty = DifficultyLevel[args.difficulty.upper()]
     game.config.show_pose_landmarks = args.show_pose
     game.config.fullscreen = not args.windowed
-    
-    # Create window
-    window_name = 'Football Penalty Shootout - Full Body Control'
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    
-    if game.config.fullscreen:
-        cv2.setWindowProperty(window_name, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    else:
-        cv2.resizeWindow(window_name, 1920, 1080)
+
+    # --- Pygame Setup ---
+    pygame.init()
+    WIDTH, HEIGHT = 1920, 1080
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("Football Penalty Shootout - Full Body Control (CV+Pygame)")
+    font = pygame.font.SysFont("Arial", 36)
+    clock = pygame.time.Clock()
 
     print("⚽ FOOTBALL PENALTY SHOOTOUT - FULL BODY EDITION ⚽")
     print("=" * 70)
@@ -1087,119 +1094,58 @@ def main():
     print()
     print(f"🎮 DIFFICULTY: {args.difficulty.upper()}")
     print("=" * 70)
-    
-    # Game loop
+
     last_time = time.time()
-    
-    try:
-        while True:
+    with tracer.start_as_current_span("footandshoot_session"):
+        running = True
+        while running:
             current_time = time.time()
             dt = current_time - last_time
             last_time = current_time
-            
             ret, frame = cap.read()
             if not ret:
                 print("Error: Could not read frame from camera")
                 break
-
-            # Mirror frame for natural interaction
             frame = cv2.flip(frame, 1)
             frame = cv2.resize(frame, (1920, 1080))
-
-            # Process pose detection
             rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = game.pose_detector.pose.process(rgb_frame)
-
-            # Update pose landmarks
             game.pose_landmarks = results.pose_landmarks
-
-            # Handle pose-based input
             if results.pose_landmarks:
-                # Update body center
                 body_center = game.pose_detector.get_body_center(results.pose_landmarks)
                 if body_center:
                     game.player_body_center = Vector2D(
                         body_center.x * game.screen_width,
                         body_center.y * game.screen_height
                     )
-                
-                # Detect kick
                 if game.state == GameState.PLAYING:
                     kick_detected, power, direction = game.pose_detector.detect_kick(results.pose_landmarks)
                     if kick_detected:
-                        # Adjust direction based on body position
-                        body_offset = (game.player_body_center.x / game.screen_width) - 0.5
-                        direction.y += body_offset * 2  # Body position affects aim
-                        game.handle_shot(power, direction)
-
-            # Handle keyboard input
-            key = cv2.waitKey(1) & 0xFF
-            
-            # Handle back button
-            hand_pos = None
-            if results.pose_landmarks:
-                body_center = game.pose_detector.get_body_center(results.pose_landmarks)
-                if body_center:
-                    hand_pos = (int(body_center.x * 1920), int(body_center.y * 1080))
-            
-            if game.back_button.handle_input(key, None, hand_pos):
-                print("🚪 Exiting Football Game... Thanks for playing!")
-                break
-
-            # Handle game state changes
-            if game.state == GameState.MAIN_MENU:
-                if key == ord(' ') or key == 13:  # Space or Enter
-                    if game.menu_selection == 0:  # Start Game
-                        game.start_new_game()
-                    elif game.menu_selection == 2:  # Exit
-                        break
-                elif key == ord('w') or key == ord('W'):  # Up
-                    game.menu_selection = (game.menu_selection - 1) % 3
-                elif key == ord('s') or key == ord('S'):  # Down
-                    game.menu_selection = (game.menu_selection + 1) % 3
-            
-            elif game.state == GameState.GAME_OVER:
-                if key != 255:  # Any key pressed
-                    game.state = GameState.MAIN_MENU
-
-            # Handle general controls
-            if key == ord('q') or key == 27:  # 'q' or ESC
-                break
-            elif key == ord('r') and game.state != GameState.PLAYING:  # Restart
-                game.start_new_game()
-            elif key == ord('p'):  # Toggle pose landmarks
-                game.config.show_pose_landmarks = not game.config.show_pose_landmarks
-
-            # Update game
+                        with tracer.start_as_current_span("kick"):
+                            game.handle_shot(power, direction)
+            # Update game state
             game.update(dt)
-
-            # Draw everything
+            # Draw everything on the frame (OpenCV drawing)
             game.draw(frame)
-
-            # Show frame
-            cv2.imshow(window_name, frame)
-
-    except KeyboardInterrupt:
-        print("\n🛑 Game interrupted by user")
-    except Exception as e:
-        print(f"💥 Game crashed with error: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        # Cleanup
-        cap.release()
-        cv2.destroyAllWindows()
-        
-        # Print final statistics
-        if hasattr(game, 'total_shots') and game.total_shots > 0:
-            print("\n📊 FINAL FOOTBALL STATISTICS:")
-            print(f"   ⚽ Total Goals: {game.goals_scored}")
-            print(f"   🎯 Total Shots: {game.total_shots}") 
-            print(f"   📈 Success Rate: {(game.goals_scored/game.total_shots)*100:.1f}%")
-            print(f"   🥅 Goalkeeper Saves: {game.saves_made}")
-        
-        print("\n⚽ FULL TIME! ⚽")
-        print("Thanks for playing Football Penalty Shootout!")
+            # --- Pygame Event Handling ---
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_q:
+                        running = False
+                    elif event.key == pygame.K_r:
+                        with tracer.start_as_current_span("restart_game"):
+                            game.start_new_game()
+            # --- Pygame Rendering ---
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            surf = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+            screen.blit(surf, (0, 0))
+            pygame.display.flip()
+            clock.tick(30)
+    cap.release()
+    pygame.quit()
+    sys.exit()
 
 
 if __name__ == "__main__":

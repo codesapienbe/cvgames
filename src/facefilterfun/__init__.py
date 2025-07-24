@@ -13,6 +13,10 @@ import urllib.request
 import tempfile
 import re
 import webbrowser
+import pygame
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
 
 # Structured logging setup for application.log
 LOG_FILE = os.path.join(os.path.dirname(__file__), '../../application.log')
@@ -375,57 +379,85 @@ def main():
     mp_draw = solutions.drawing_utils
     filter_fun = FaceFilterFun()
     if not filter_fun.masks:
-        # Show a user-friendly message in the OpenCV window and exit
         blank = np.zeros((480, 800, 3), dtype=np.uint8)
         cv2.putText(blank, "No masks available.", (80, 200), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0,0,255), 3)
         cv2.putText(blank, "Check application.log for details.", (40, 300), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
-        cv2.imshow("Face Filter Fun", blank)
-        cv2.waitKey(5000)
-        cv2.destroyAllWindows()
+        # Show in Pygame window
+        pygame.init()
+        screen = pygame.display.set_mode((800, 480))
+        surf = pygame.surfarray.make_surface(np.rot90(blank))
+        screen.blit(surf, (0, 0))
+        pygame.display.flip()
+        pygame.time.wait(5000)
+        pygame.quit()
         return
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Error: Could not open webcam.")
         return
-    cv2.namedWindow("Face Filter Fun", cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty("Face Filter Fun", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    pygame.init()
+    screen = pygame.display.set_mode((width, height))
+    pygame.display.set_caption("Face Filter Fun (CV+Pygame)")
+    font = pygame.font.SysFont("Arial", 36)
+    clock = pygame.time.Clock()
+    # Set up OpenTelemetry tracing
+    trace.set_tracer_provider(TracerProvider())
+    tracer = trace.get_tracer(__name__)
+    span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+    trace.get_tracer_provider().add_span_processor(span_processor)
     last_hands_open = False
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        frame = cv2.flip(frame, 1)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        face_results = face_mesh.process(rgb)
-        hand_results = hands.process(rgb)
-        face_landmarks = face_results.multi_face_landmarks[0] if face_results.multi_face_landmarks else None
-        frame = filter_fun.apply_current_filter(frame, face_landmarks)
-        if hand_results.multi_hand_landmarks:
-            for hl in hand_results.multi_hand_landmarks:
-                mp_draw.draw_landmarks(frame, hl, mp_hands.HAND_CONNECTIONS)
-            hands_open = both_hands_open(hand_results.multi_hand_landmarks)
-            if hands_open and not last_hands_open:
-                filter_fun.switch_filter()
-            last_hands_open = hands_open
-        else:
-            last_hands_open = False
-        filter_fun.draw_ui(frame)
-        cv2.imshow("Face Filter Fun", frame)
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('r'):
-            filter_fun = FaceFilterFun()
-            if not filter_fun.masks:
-                blank = np.zeros((480, 800, 3), dtype=np.uint8)
-                cv2.putText(blank, "No masks available.", (80, 200), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0,0,255), 3)
-                cv2.putText(blank, "Check application.log for details.", (40, 300), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
-                cv2.imshow("Face Filter Fun", blank)
-                cv2.waitKey(5000)
-                cv2.destroyAllWindows()
-                return
+    with tracer.start_as_current_span("facefilterfun_session"):
+        running = True
+        while running:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame = cv2.flip(frame, 1)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            face_results = face_mesh.process(rgb)
+            hand_results = hands.process(rgb)
+            face_landmarks = face_results.multi_face_landmarks[0] if face_results.multi_face_landmarks else None
+            frame = filter_fun.apply_current_filter(frame, face_landmarks)
+            if hand_results.multi_hand_landmarks:
+                for hl in hand_results.multi_hand_landmarks:
+                    mp_draw.draw_landmarks(frame, hl, mp_hands.HAND_CONNECTIONS)
+                hands_open = both_hands_open(hand_results.multi_hand_landmarks)
+                if hands_open and not last_hands_open:
+                    with tracer.start_as_current_span("mask_switch"):
+                        filter_fun.switch_filter()
+                last_hands_open = hands_open
+            else:
+                last_hands_open = False
+            filter_fun.draw_ui(frame)
+            # --- Pygame Event Handling ---
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_q:
+                        running = False
+                    elif event.key == pygame.K_r:
+                        with tracer.start_as_current_span("restart_game"):
+                            filter_fun = FaceFilterFun()
+                            if not filter_fun.masks:
+                                blank = np.zeros((480, 800, 3), dtype=np.uint8)
+                                cv2.putText(blank, "No masks available.", (80, 200), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0,0,255), 3)
+                                cv2.putText(blank, "Check application.log for details.", (40, 300), cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,255), 2)
+                                surf = pygame.surfarray.make_surface(np.rot90(blank))
+                                screen.blit(surf, (0, 0))
+                                pygame.display.flip()
+                                pygame.time.wait(5000)
+                                running = False
+            # --- Pygame Rendering ---
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            surf = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+            screen.blit(surf, (0, 0))
+            pygame.display.flip()
+            clock.tick(30)
     cap.release()
-    cv2.destroyAllWindows()
+    pygame.quit()
 
 if __name__ == "__main__":
     ensure_imagemagick()

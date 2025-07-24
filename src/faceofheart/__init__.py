@@ -23,6 +23,11 @@ import math
 import warnings
 warnings.filterwarnings('ignore')
 
+import pygame
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
+
 # Install MediaPipe for face detection if not available
 try:
     import mediapipe as mp
@@ -1494,11 +1499,80 @@ def main():
     else:
         print("✅ All dependencies available")
     
-    # Launch the head circle gesture-controlled app
-    print("\n🚀 Launching application...")
+    # --- Pygame Setup ---
+    pygame.init()
+    WIDTH, HEIGHT = 1280, 720
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("HeartSense Pro (CV+Pygame)")
+    font = pygame.font.SysFont("Arial", 36)
+    clock = pygame.time.Clock()
+    # Set up OpenTelemetry tracing
+    trace.set_tracer_provider(TracerProvider())
+    tracer = trace.get_tracer(__name__)
+    span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+    trace.get_tracer_provider().add_span_processor(span_processor)
+    # --- Initialize business logic ---
     app = HeadCircleGestureControlledHeartRateApp()
-    app.run()
-
+    # --- Replace Tkinter mainloop with Pygame loop ---
+    with tracer.start_as_current_span("faceofheart_session"):
+        running = True
+        app.running = True
+        # Start the CV processing thread
+        cv_thread = threading.Thread(target=app.cv_processing_loop, daemon=True)
+        cv_thread.start()
+        while running and app.running:
+            # --- Pygame Event Handling ---
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                    app.running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_q:
+                        running = False
+                        app.running = False
+            # --- Pygame Rendering ---
+            # Instead of Tkinter dashboard, draw a simple Pygame UI
+            screen.fill((28, 28, 30))
+            # Draw heart rate and status
+            hr = getattr(app, 'heart_rate', 0)
+            confidence = getattr(app, 'confidence', 0.0)
+            signal_quality = getattr(app, 'signal_quality', 0.0)
+            motion_level = getattr(app, 'motion_level', 0.0)
+            state_info = app.state_machine.get_state_info() if hasattr(app, 'state_machine') else {'state': 'IDLE'}
+            face_detected = getattr(app, 'face_detected', False)
+            # Heart rate
+            hr_text = font.render(f"Heart Rate: {int(hr)} bpm", True, (255, 255, 255))
+            screen.blit(hr_text, (50, 50))
+            # Confidence
+            conf_text = font.render(f"Confidence: {confidence:.2f}", True, (180, 230, 255))
+            screen.blit(conf_text, (50, 120))
+            # Signal quality
+            sq_text = font.render(f"Signal Quality: {signal_quality:.2f}", True, (180, 255, 180))
+            screen.blit(sq_text, (50, 190))
+            # Motion level
+            ml_text = font.render(f"Motion Level: {motion_level:.2f}", True, (255, 200, 100))
+            screen.blit(ml_text, (50, 260))
+            # State
+            state_text = font.render(f"State: {state_info['state']}", True, (255, 180, 180))
+            screen.blit(state_text, (50, 330))
+            # Face detected
+            fd_text = font.render(f"Face Detected: {'Yes' if face_detected else 'No'}", True, (180, 255, 255))
+            screen.blit(fd_text, (50, 400))
+            # Instructions
+            inst_text = font.render("Draw a circle with your head to START/STOP", True, (200, 200, 255))
+            screen.blit(inst_text, (50, 600))
+            # --- OpenTelemetry logging for key events ---
+            if hasattr(app, 'current_gesture_status') and app.current_gesture_status:
+                with tracer.start_as_current_span("gesture_detected"):
+                    pass
+            if hasattr(app, 'heart_rate') and app.heart_rate:
+                with tracer.start_as_current_span("heart_rate_update"):
+                    pass
+            pygame.display.flip()
+            clock.tick(30)
+        app.on_closing()
+    pygame.quit()
+    print("Application closed")
 
 
 if __name__ == "__main__":
