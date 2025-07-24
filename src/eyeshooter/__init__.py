@@ -4,6 +4,11 @@ import numpy as np
 import random
 import time
 import math
+import pygame
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
+import sys
 
 class Target:
     def __init__(self, x, y, size=30, speed=2):
@@ -216,73 +221,76 @@ def main():
         min_tracking_confidence=0.5
     )
     mp_draw = mp.solutions.drawing_utils
-    
     # Setup camera
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Error: Could not open webcam.")
         return
-    
-    # Create fullscreen window
-    cv2.namedWindow("Eye Shooter", cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty("Eye Shooter", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    
     # Get frame dimensions
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
     # Initialize game
     game = EyeShooter(frame_width, frame_height)
-    
     # Blink detection variables
     last_blink_time = 0
     blink_cooldown = 0.3  # seconds
-    
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        
-        frame = cv2.flip(frame, 1)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = face_mesh.process(rgb)
-        
-        current_time = time.time()
-        
-        if results.multi_face_landmarks:
-            face_landmarks = results.multi_face_landmarks[0]
-            
-            # Draw face mesh
-            mp_draw.draw_landmarks(frame, face_landmarks, mp_face_mesh.FACEMESH_CONTOURS)
-            
-            # Detect eye gaze
-            gaze_pos = detect_eye_gaze(face_landmarks, frame_width, frame_height)
-            if gaze_pos:
-                game.crosshair_x, game.crosshair_y = gaze_pos
-            
-            # Detect blink
-            if detect_blink(face_landmarks):
-                if current_time - last_blink_time >= blink_cooldown:
-                    # Shoot at crosshair position
-                    game.shoot(game.crosshair_x, game.crosshair_y)
-                    last_blink_time = current_time
-        
-        # Update and draw game
-        if not game.game_over:
-            game.update()
-        
-        game.draw(frame)
-        
-        cv2.imshow("Eye Shooter", frame)
-        
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('r'):
-            game.reset_game()
-    
+    # --- Pygame Setup ---
+    pygame.init()
+    screen = pygame.display.set_mode((frame_width, frame_height))
+    pygame.display.set_caption("Eye Shooter (CV+Pygame)")
+    font = pygame.font.SysFont("Arial", 36)
+    clock = pygame.time.Clock()
+    # Set up OpenTelemetry tracing
+    trace.set_tracer_provider(TracerProvider())
+    tracer = trace.get_tracer(__name__)
+    span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+    trace.get_tracer_provider().add_span_processor(span_processor)
+    with tracer.start_as_current_span("eyeshooter_session"):
+        running = True
+        while running:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame = cv2.flip(frame, 1)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = face_mesh.process(rgb)
+            current_time = time.time()
+            if results.multi_face_landmarks:
+                face_landmarks = results.multi_face_landmarks[0]
+                mp_draw.draw_landmarks(frame, face_landmarks, mp_face_mesh.FACEMESH_CONTOURS)
+                # Detect eye gaze
+                gaze_pos = detect_eye_gaze(face_landmarks, frame_width, frame_height)
+                if gaze_pos:
+                    game.crosshair_x, game.crosshair_y = gaze_pos
+                # Detect blink
+                if detect_blink(face_landmarks):
+                    if current_time - last_blink_time >= blink_cooldown:
+                        with tracer.start_as_current_span("shoot"):
+                            game.shoot(game.crosshair_x, game.crosshair_y)
+                        last_blink_time = current_time
+            # Update and draw game
+            if not game.game_over:
+                game.update()
+            game.draw(frame)
+            # --- Pygame Event Handling ---
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_q:
+                        running = False
+                    elif event.key == pygame.K_r:
+                        with tracer.start_as_current_span("restart_game"):
+                            game.reset_game()
+            # --- Pygame Rendering ---
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            surf = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+            screen.blit(surf, (0, 0))
+            pygame.display.flip()
+            clock.tick(30)
     cap.release()
-    cv2.destroyAllWindows()
+    pygame.quit()
+    sys.exit()
 
 if __name__ == "__main__":
     main() 

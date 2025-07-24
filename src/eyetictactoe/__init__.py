@@ -2,6 +2,11 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import time
+import pygame
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
+import sys
 
 class EyeTicTacToe:
     def __init__(self):
@@ -107,150 +112,131 @@ def main():
         min_tracking_confidence=0.5
     )
     mp_draw = mp.solutions.drawing_utils
-    
     # Initialize game
     game = EyeTicTacToe()
-    
     # Setup camera
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("Error: Could not open webcam.")
         return
-    
-    # Create fullscreen window
-    cv2.namedWindow("Eye Tic Tac Toe", cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty("Eye Tic Tac Toe", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    
     # Get frame dimensions
     frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        
-        frame = cv2.flip(frame, 1)
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = face_mesh.process(rgb)
-        
-        current_time = time.time()
-        
-        # Detect eye gaze
-        if results.multi_face_landmarks:
-            face_landmarks = results.multi_face_landmarks[0]
-            
-            # Draw face mesh
-            mp_draw.draw_landmarks(frame, face_landmarks, mp_face_mesh.FACEMESH_CONTOURS)
-            
-            # Get gaze position
-            gaze_pos = detect_eye_gaze(face_landmarks, frame_width, frame_height)
-            
-            if gaze_pos:
-                row, col = gaze_pos
-                
-                # Check if this is a new selection
-                if gaze_pos != game.last_selection:
-                    game.selection_time = current_time
-                    game.last_selection = gaze_pos
-                
-                # Check if selection has been held long enough
-                if current_time - game.selection_time >= game.selection_threshold:
-                    if game.board[row][col] == '':  # Cell is empty
-                        game.make_move(row, col)
-                        game.selection_time = current_time  # Reset timer
-                
-                # Draw selection indicator
-                cell_width = frame_width * 0.6 / 3
-                cell_height = frame_height * 0.6 / 3
-                board_x = (frame_width - frame_width * 0.6) / 2
-                board_y = (frame_height - frame_height * 0.6) / 2
-                
-                cell_x = int(board_x + col * cell_width)
-                cell_y = int(board_y + row * cell_height)
-                
-                # Draw selection rectangle
-                progress = min(1.0, (current_time - game.selection_time) / game.selection_threshold)
-                color = (0, int(255 * progress), int(255 * (1 - progress)))
-                cv2.rectangle(frame, (cell_x, cell_y), 
-                             (int(cell_x + cell_width), int(cell_y + cell_height)), 
-                             color, 3)
-        
-        # Draw game board
-        board_width = frame_width * 0.6
-        board_height = frame_height * 0.6
-        board_x = int((frame_width - board_width) / 2)
-        board_y = int((frame_height - board_height) / 2)
-        
-        # Draw board background
-        cv2.rectangle(frame, (board_x, board_y), 
-                     (int(board_x + board_width), int(board_y + board_height)), 
-                     (255, 255, 255), -1)
-        cv2.rectangle(frame, (board_x, board_y), 
-                     (int(board_x + board_width), int(board_y + board_height)), 
-                     (0, 0, 0), 3)
-        
-        # Draw grid lines
-        cell_width = board_width / 3
-        cell_height = board_height / 3
-        
-        for i in range(1, 3):
-            # Vertical lines
-            x = int(board_x + i * cell_width)
-            cv2.line(frame, (x, board_y), (x, int(board_y + board_height)), (0, 0, 0), 2)
-            # Horizontal lines
-            y = int(board_y + i * cell_height)
-            cv2.line(frame, (board_x, y), (int(board_x + board_width), y), (0, 0, 0), 2)
-        
-        # Draw X's and O's
-        for row in range(3):
-            for col in range(3):
-                if game.board[row][col]:
-                    cell_x = int(board_x + col * cell_width + cell_width / 2)
-                    cell_y = int(board_y + row * cell_height + cell_height / 2)
-                    
-                    if game.board[row][col] == 'X':
-                        # Draw X
-                        size = int(min(cell_width, cell_height) * 0.3)
-                        cv2.line(frame, (cell_x - size, cell_y - size), 
-                                (cell_x + size, cell_y + size), (255, 0, 0), 5)
-                        cv2.line(frame, (cell_x - size, cell_y + size), 
-                                (cell_x + size, cell_y - size), (255, 0, 0), 5)
-                    else:
-                        # Draw O
-                        radius = int(min(cell_width, cell_height) * 0.3)
-                        cv2.circle(frame, (cell_x, cell_y), radius, (0, 0, 255), 5)
-        
-        # Draw game status
-        status_y = 50
-        cv2.putText(frame, f"Current Player: {game.current_player}", (50, status_y), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-        
-        if game.game_over:
-            if game.winner == 'Draw':
-                cv2.putText(frame, "It's a Draw!", (frame_width//2 - 100, status_y + 50), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
-            else:
-                cv2.putText(frame, f"{game.winner} Wins!", (frame_width//2 - 100, status_y + 50), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
-            
-            cv2.putText(frame, "Press 'r' to restart or 'q' to quit", 
-                       (frame_width//2 - 200, status_y + 100), 
+    # --- Pygame Setup ---
+    pygame.init()
+    screen = pygame.display.set_mode((frame_width, frame_height))
+    pygame.display.set_caption("Eye Tic Tac Toe (CV+Pygame)")
+    font = pygame.font.SysFont("Arial", 36)
+    clock = pygame.time.Clock()
+    with tracer.start_as_current_span("eyetictactoe_session"):
+        running = True
+        while running:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame = cv2.flip(frame, 1)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = face_mesh.process(rgb)
+            current_time = time.time()
+            # Detect eye gaze
+            if results.multi_face_landmarks:
+                face_landmarks = results.multi_face_landmarks[0]
+                mp_draw.draw_landmarks(frame, face_landmarks, mp_face_mesh.FACEMESH_CONTOURS)
+                gaze_pos = detect_eye_gaze(face_landmarks, frame_width, frame_height)
+                if gaze_pos:
+                    row, col = gaze_pos
+                    if gaze_pos != game.last_selection:
+                        game.selection_time = current_time
+                        game.last_selection = gaze_pos
+                    if current_time - game.selection_time >= game.selection_threshold:
+                        if game.board[row][col] == '':
+                            with tracer.start_as_current_span("move"):
+                                game.make_move(row, col)
+                            game.selection_time = current_time
+                    # Draw selection indicator
+                    cell_width = frame_width * 0.6 / 3
+                    cell_height = frame_height * 0.6 / 3
+                    board_x = (frame_width - frame_width * 0.6) / 2
+                    board_y = (frame_height - frame_height * 0.6) / 2
+                    cell_x = int(board_x + col * cell_width)
+                    cell_y = int(board_y + row * cell_height)
+                    progress = min(1.0, (current_time - game.selection_time) / game.selection_threshold)
+                    color = (0, int(255 * progress), int(255 * (1 - progress)))
+                    cv2.rectangle(frame, (cell_x, cell_y), 
+                                 (int(cell_x + cell_width), int(cell_y + cell_height)), 
+                                 color, 3)
+            # Draw game board and UI (unchanged)
+            board_width = frame_width * 0.6
+            board_height = frame_height * 0.6
+            board_x = int((frame_width - board_width) / 2)
+            board_y = int((frame_height - board_height) / 2)
+            cv2.rectangle(frame, (board_x, board_y), 
+                         (int(board_x + board_width), int(board_y + board_height)), 
+                         (255, 255, 255), -1)
+            cv2.rectangle(frame, (board_x, board_y), 
+                         (int(board_x + board_width), int(board_y + board_height)), 
+                         (0, 0, 0), 3)
+            cell_width = board_width / 3
+            cell_height = board_height / 3
+            for i in range(1, 3):
+                x = int(board_x + i * cell_width)
+                cv2.line(frame, (x, board_y), (x, int(board_y + board_height)), (0, 0, 0), 2)
+                y = int(board_y + i * cell_height)
+                cv2.line(frame, (board_x, y), (int(board_x + board_width), y), (0, 0, 0), 2)
+            for row in range(3):
+                for col in range(3):
+                    if game.board[row][col]:
+                        cell_x = int(board_x + col * cell_width + cell_width / 2)
+                        cell_y = int(board_y + row * cell_height + cell_height / 2)
+                        if game.board[row][col] == 'X':
+                            size = int(min(cell_width, cell_height) * 0.3)
+                            cv2.line(frame, (cell_x - size, cell_y - size), 
+                                    (cell_x + size, cell_y + size), (255, 0, 0), 5)
+                            cv2.line(frame, (cell_x - size, cell_y + size), 
+                                    (cell_x + size, cell_y - size), (255, 0, 0), 5)
+                        else:
+                            radius = int(min(cell_width, cell_height) * 0.3)
+                            cv2.circle(frame, (cell_x, cell_y), radius, (0, 0, 255), 5)
+            status_y = 50
+            cv2.putText(frame, f"Current Player: {game.current_player}", (50, status_y), 
                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
-        else:
-            cv2.putText(frame, "Look at a cell for 2 seconds to place your mark", 
-                       (50, frame_height - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
-        
-        cv2.imshow("Eye Tic Tac Toe", frame)
-        
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('r'):
-            game.reset_game()
-    
+            if game.game_over:
+                if game.winner == 'Draw':
+                    cv2.putText(frame, "It's a Draw!", (frame_width//2 - 100, status_y + 50), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
+                else:
+                    cv2.putText(frame, f"{game.winner} Wins!", (frame_width//2 - 100, status_y + 50), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
+                cv2.putText(frame, "Press 'r' to restart or 'q' to quit", 
+                           (frame_width//2 - 200, status_y + 100), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 0), 2)
+            else:
+                cv2.putText(frame, "Look at a cell for 2 seconds to place your mark", 
+                           (50, frame_height - 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+            # --- Pygame Event Handling ---
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_q:
+                        running = False
+                    elif event.key == pygame.K_r:
+                        with tracer.start_as_current_span("restart_game"):
+                            game.reset_game()
+            # --- Pygame Rendering ---
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            surf = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+            screen.blit(surf, (0, 0))
+            pygame.display.flip()
+            clock.tick(30)
     cap.release()
-    cv2.destroyAllWindows()
+    pygame.quit()
+    sys.exit()
 
 if __name__ == "__main__":
+    # Set up OpenTelemetry tracing
+    trace.set_tracer_provider(TracerProvider())
+    tracer = trace.get_tracer(__name__)
+    span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+    trace.get_tracer_provider().add_span_processor(span_processor)
     main() 

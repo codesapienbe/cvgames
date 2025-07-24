@@ -4,6 +4,11 @@ import numpy as np
 import random
 import math
 import ctypes
+import pygame
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
+import sys
 
 mp_pose = mp.solutions.pose
 mp_hands = mp.solutions.hands
@@ -236,99 +241,106 @@ cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, screen_width)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, screen_height)
 cap.set(cv2.CAP_PROP_FPS, 30)
-cv2.namedWindow('❄️ Elsa Full Body Magic ❄️', cv2.WINDOW_NORMAL)
-cv2.setWindowProperty('❄️ Elsa Full Body Magic ❄️', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+# Set up OpenTelemetry tracing
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer(__name__)
+span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+trace.get_tracer_provider().add_span_processor(span_processor)
 
-while cap.isOpened():
-    success, frame = cap.read()
-    if not success:
-        continue
-    
-    frame = cv2.flip(frame, 1)
-    h, w = frame.shape[:2]
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    
-    pose_results = pose.process(rgb)
-    hand_results = hands.process(rgb)
-    
-    # apply cooler tone: boost blue and green, reduce red for icy palette
-    frame[:,:,0] = cv2.add(frame[:,:,0], 50)
-    frame[:,:,1] = cv2.add(frame[:,:,1], 30)
-    frame[:,:,2] = cv2.subtract(frame[:,:,2], 20)
-    
-    body_points = []
-    foot_positions = []
-    hand_positions = []
-    
-    if pose_results.pose_landmarks:
-        landmarks = pose_results.pose_landmarks.landmark
-        
-        left_foot = landmarks[mp_pose.PoseLandmark.LEFT_FOOT_INDEX]
-        right_foot = landmarks[mp_pose.PoseLandmark.RIGHT_FOOT_INDEX]
-        foot_positions = [
-            (int(left_foot.x * w), int(left_foot.y * h)),
-            (int(right_foot.x * w), int(right_foot.y * h))
-        ]
-        
-        chest = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
-        left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
-        right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
-        
-        body_points = [
-            (int(chest.x * w), int(chest.y * h)),
-            (int(left_shoulder.x * w), int(left_shoulder.y * h)),
-            (int(right_shoulder.x * w), int(right_shoulder.y * h))
-        ]
-    
-    current_hands = []
-    hands_above_head = 0
-    
-    if hand_results.multi_hand_landmarks:
-        for idx, hand in enumerate(hand_results.multi_hand_landmarks):
-            wrist = hand.landmark[mp_hands.HandLandmark.WRIST]
-            cx, cy = int(wrist.x * w), int(wrist.y * h)
-            current_hands.append((cx, cy))
-            hand_positions.append((cx, cy))
-            
-            if cy < h * 0.2:
-                hands_above_head += 1
-            
-            gesture = detect_hand_gesture(hand)
-            
-            if gesture == "ice_ball":
-                velocity = [0, -8]
-                if idx in prev_hands:
-                    velocity = [(cx - prev_hands[idx][0]) * 0.8, (cy - prev_hands[idx][1]) * 0.8]
-                create_ice_projectile((cx, cy), velocity)
-                add_sparkles((cx, cy), 8)
-            
-            elif gesture == "ice_beam" and body_points:
-                create_chest_ice_beam(body_points[0], (cx, cy))
-            
-            elif gesture == "ground_freeze" and foot_positions:
-                for foot_pos in foot_positions:
-                    create_foot_freeze(foot_pos)
-                    add_sparkles(foot_pos, 15)
-            
-            elif gesture == "blizzard" and body_points:
-                for shoulder in body_points[1:]:
-                    create_shoulder_blizzard(shoulder)
-    
-    if hands_above_head >= 2 and body_points and not shield_active:
-        create_body_shield(body_points)
-        add_sparkles(body_points[0], 25)
-    
-    prev_hands = {idx: pos for idx, pos in enumerate(current_hands)}
-    
-    update_effects(frame)
-    
-    for _ in range(12):
-        cv2.circle(frame, (random.randint(0, w), random.randint(0, h)), 
-                  random.randint(1, 3), (255, 255, 255), -1)
-    
-    cv2.imshow('❄️ Elsa Full Body Magic ❄️', frame)
-    if cv2.waitKey(5) & 0xFF == ord('q'):
-        break
-
+# Main loop
+pygame.init()
+screen = pygame.display.set_mode((screen_width, screen_height))
+pygame.display.set_caption('❄️ Elsa Full Body Magic ❄️ (CV+Pygame)')
+font = pygame.font.SysFont("Arial", 32)
+clock = pygame.time.Clock()
+with tracer.start_as_current_span("elsa_session"):
+    running = True
+    while cap.isOpened() and running:
+        success, frame = cap.read()
+        if not success:
+            continue
+        frame = cv2.flip(frame, 1)
+        h, w = frame.shape[:2]
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pose_results = pose.process(rgb)
+        hand_results = hands.process(rgb)
+        # apply cooler tone: boost blue and green, reduce red for icy palette
+        frame[:,:,0] = cv2.add(frame[:,:,0], 50)
+        frame[:,:,1] = cv2.add(frame[:,:,1], 30)
+        frame[:,:,2] = cv2.subtract(frame[:,:,2], 20)
+        body_points = []
+        foot_positions = []
+        hand_positions = []
+        if pose_results.pose_landmarks:
+            landmarks = pose_results.pose_landmarks.landmark
+            left_foot = landmarks[mp_pose.PoseLandmark.LEFT_FOOT_INDEX]
+            right_foot = landmarks[mp_pose.PoseLandmark.RIGHT_FOOT_INDEX]
+            foot_positions = [
+                (int(left_foot.x * w), int(left_foot.y * h)),
+                (int(right_foot.x * w), int(right_foot.y * h))
+            ]
+            chest = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
+            left_shoulder = landmarks[mp_pose.PoseLandmark.LEFT_SHOULDER]
+            right_shoulder = landmarks[mp_pose.PoseLandmark.RIGHT_SHOULDER]
+            body_points = [
+                (int(chest.x * w), int(chest.y * h)),
+                (int(left_shoulder.x * w), int(left_shoulder.y * h)),
+                (int(right_shoulder.x * w), int(right_shoulder.y * h))
+            ]
+        current_hands = []
+        hands_above_head = 0
+        if hand_results.multi_hand_landmarks:
+            for idx, hand in enumerate(hand_results.multi_hand_landmarks):
+                wrist = hand.landmark[mp_hands.HandLandmark.WRIST]
+                cx, cy = int(wrist.x * w), int(wrist.y * h)
+                current_hands.append((cx, cy))
+                hand_positions.append((cx, cy))
+                if cy < h * 0.2:
+                    hands_above_head += 1
+                gesture = detect_hand_gesture(hand)
+                if gesture == "ice_ball":
+                    velocity = [0, -8]
+                    if idx in prev_hands:
+                        velocity = [(cx - prev_hands[idx][0]) * 0.8, (cy - prev_hands[idx][1]) * 0.8]
+                    with tracer.start_as_current_span("ice_ball"):
+                        create_ice_projectile((cx, cy), velocity)
+                    add_sparkles((cx, cy), 8)
+                elif gesture == "ice_beam" and body_points:
+                    with tracer.start_as_current_span("ice_beam"):
+                        create_chest_ice_beam(body_points[0], (cx, cy))
+                elif gesture == "ground_freeze" and foot_positions:
+                    with tracer.start_as_current_span("ground_freeze"):
+                        for foot_pos in foot_positions:
+                            create_foot_freeze(foot_pos)
+                            add_sparkles(foot_pos, 15)
+                elif gesture == "blizzard" and body_points:
+                    with tracer.start_as_current_span("blizzard"):
+                        for shoulder in body_points[1:]:
+                            create_shoulder_blizzard(shoulder)
+        if hands_above_head >= 2 and body_points and not shield_active:
+            with tracer.start_as_current_span("body_shield"):
+                create_body_shield(body_points)
+            add_sparkles(body_points[0], 25)
+        prev_hands = {idx: pos for idx, pos in enumerate(current_hands)}
+        update_effects(frame)
+        for _ in range(12):
+            cv2.circle(frame, (random.randint(0, w), random.randint(0, h)), random.randint(1, 3), (255, 255, 255), -1)
+        # --- Pygame Event Handling ---
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+        # --- Pygame Rendering ---
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        surf = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+        screen.blit(surf, (0, 0))
+        instr = font.render("Use your body and hands to cast Elsa's magic! Press 'q' to quit.", True, (0,0,0))
+        screen.blit(instr, (30, screen_height - 50))
+        pygame.display.flip()
+        clock.tick(30)
+        # --- Keyboard quit ---
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_q]:
+            running = False
 cap.release()
-cv2.destroyAllWindows()
+pygame.quit()
+sys.exit()
