@@ -2,6 +2,12 @@ import cv2
 from cvzone.HandTrackingModule import HandDetector
 from pynput.keyboard import Controller
 from screeninfo import get_monitors
+import pygame
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
+import numpy as np
+import sys
 
 
 class Label:
@@ -102,11 +108,9 @@ def main():
         if m.is_primary:
             primary_monitor = m
             break
-
     cap = cv2.VideoCapture(0)
     cap.set(3, primary_monitor.width)
     cap.set(4, primary_monitor.height)
-
     button_values = [
         ["Q", "A", "Z", "1"],
         ["W", "S", "X", "2"],
@@ -119,75 +123,82 @@ def main():
         ["O", "L", ".", "9"],
         ["P", ";", "/", "0"],
     ]
-
-    button_values_vertical = [
-        ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"],
-        ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"],
-        ["A", "S", "D", "F", "G", "H", "J", "K", "L", ";"],
-        ["Z", "X", "C", "V", "B", "N", "M", ",", ".", "/"]
-    ]
-
     keyboard = Controller()
-
     detector = HandDetector(detectionCon=0.8, maxHands=1)
     button_components = []
-
     for x in range(10):
         for y in range(4):
-            pos_x = x * 70 + 350  # starting from 350 pixel in the width
-            pos_y = y * 70 + 100  # starting from 100 pixel in the height
+            pos_x = x * 70 + 350
+            pos_y = y * 70 + 100
             button_components.append(Button((pos_x, pos_y), 70, 70, button_values[x][y]))
-        # to store the whole equation from the calculator
-        global equation
-        equation = ""
-    # to avoid duplicated value inside calculator in event writing
+    global equation
+    equation = ""
     delay_counter = 0
-
-    while cap.isOpened():
-        success, img = cap.read()
-        img = cv2.flip(img, 1)
-        # detection hand
-        hand, img = detector.findHands(img, flipType=False)
-
-        cv2.rectangle(img, (350, 30), (350 + 280, 100), (255, 255, 255), 2)
-
-        equation_label = Label(350, 40, 200, 40, equation, 3)
-        equation_label.draw(img)
-
-        for button in button_components:
-            button.draw(img)
-
-        if len(hand) == 1:
-            landmarks = hand[0]["lmList"]
-            distance, _, img = detector.findDistance(landmarks[8][:2], landmarks[12][:2], img)
-            x, y = landmarks[8][:2]
-
-            if distance < 70:
-                for button in button_components:
-                    if button.click(img, x, y) and delay_counter == 0:
-                        button.background((255, 255, 255), img)
-                        keyboard.press(button.value)
-                        equation += button.value
-                        delay_counter = 1
-
-        # avoid duplicates
-        if delay_counter != 0:
-            delay_counter += 1
-            # i did not add value into display calculator
-            # after passing 10 frames
-            if delay_counter > 10:
-                delay_counter = 0
-
-        cv2.imshow("image", img)
-
-        key = cv2.waitKey(1)
-        if (key == ord("c")):  # to clear the display calculator
-            equation = ""
-        if key == ord('q'):  # to stop the program
-            cv2.destroyAllWindows()
-            cap.release()
-            exit(-1)
-
+    # Set up OpenTelemetry tracing
+    trace.set_tracer_provider(TracerProvider())
+    tracer = trace.get_tracer(__name__)
+    span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+    trace.get_tracer_provider().add_span_processor(span_processor)
+    # Pygame setup
+    ret, img = cap.read()
+    if not ret:
+        print("Error: Could not read from camera.")
+        return
+    height, width = img.shape[:2]
+    pygame.init()
+    screen = pygame.display.set_mode((width, height))
+    pygame.display.set_caption("Virtual Keyboard (CV+Pygame)")
+    font = pygame.font.SysFont("Arial", 36)
+    clock = pygame.time.Clock()
+    with tracer.start_as_current_span("keyboard_session"):
+        running = True
+        while running:
+            success, img = cap.read()
+            if not success:
+                break
+            img = cv2.flip(img, 1)
+            hand, img = detector.findHands(img, flipType=False)
+            cv2.rectangle(img, (350, 30), (350 + 280, 100), (255, 255, 255), 2)
+            equation_label = Label(350, 40, 200, 40, equation, 3)
+            equation_label.draw(img)
+            for button in button_components:
+                button.draw(img)
+            if len(hand) == 1:
+                landmarks = hand[0]["lmList"]
+                distance, _, img = detector.findDistance(landmarks[8][:2], landmarks[12][:2], img)
+                x, y = landmarks[8][:2]
+                if distance < 70:
+                    for button in button_components:
+                        if button.click(img, x, y) and delay_counter == 0:
+                            button.background((255, 255, 255), img)
+                            keyboard.press(button.value)
+                            with tracer.start_as_current_span("button_press"):
+                                pass
+                            equation += button.value
+                            delay_counter = 1
+            if delay_counter != 0:
+                delay_counter += 1
+                if delay_counter > 10:
+                    delay_counter = 0
+            # --- Pygame Event Handling ---
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_q:
+                        running = False
+                    elif event.key == pygame.K_c:
+                        with tracer.start_as_current_span("clear"):
+                            equation = ""
+            # --- Pygame Rendering ---
+            frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            surf = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+            screen.blit(surf, (0, 0))
+            pygame.display.flip()
+            clock.tick(30)
+    cap.release()
+    pygame.quit()
+    sys.exit()
 
 if __name__ == "__main__":
     main()
