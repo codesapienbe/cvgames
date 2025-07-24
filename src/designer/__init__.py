@@ -1,302 +1,127 @@
 import cv2
 import mediapipe as mp
 import numpy as np
+import pygame
 import sys
-import argparse
-from cvzone.HandTrackingModule import HandDetector
-import cvzone
-import os
+import time
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
 
-class WebElement:
-    def __init__(self, element_type, x, y, width, height):
-        self.element_type = element_type
+# Set up OpenTelemetry tracing
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer(__name__)
+span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+trace.get_tracer_provider().add_span_processor(span_processor)
+
+WIDTH, HEIGHT = 1200, 800
+BG_COLOR = (245, 245, 255)
+ELEMENT_COLORS = [(255, 200, 200), (200, 255, 200), (200, 200, 255)]
+
+mp_hands = mp.solutions.hands
+
+class Element:
+    def __init__(self, kind, x, y):
+        self.kind = kind  # 'image', 'text', 'video'
         self.x = x
         self.y = y
-        self.width = width
-        self.height = height
-        self.color = {
-            "button": (255, 0, 0),      # Blue
-            "textfield": (0, 255, 0),   # Green
-            "label": (0, 0, 255),       # Red
-            "div": (255, 255, 0)        # Yellow
-        }.get(element_type, (255, 255, 255))
+        self.width = 160
+        self.height = 120
+        self.selected = False
+    def rect(self):
+        return pygame.Rect(self.x, self.y, self.width, self.height)
+    def draw(self, surface, font):
+        color = ELEMENT_COLORS[0] if self.kind == 'image' else ELEMENT_COLORS[1] if self.kind == 'text' else ELEMENT_COLORS[2]
+        pygame.draw.rect(surface, color, self.rect(), border_radius=12)
+        if self.selected:
+            pygame.draw.rect(surface, (255, 100, 100), self.rect(), 4, border_radius=12)
+        label = font.render(self.kind.capitalize(), True, (0,0,0))
+        surface.blit(label, (self.x + 10, self.y + 10))
+        if self.kind == 'image':
+            pygame.draw.rect(surface, (180,180,180), (self.x+30, self.y+40, 100, 60))
+        elif self.kind == 'video':
+            pygame.draw.polygon(surface, (100,100,255), [(self.x+60, self.y+50), (self.x+100, self.y+70), (self.x+60, self.y+90)])
+        elif self.kind == 'text':
+            t = font.render("AaBb", True, (80,80,80))
+            surface.blit(t, (self.x+40, self.y+60))
 
-    def draw(self, img):
-        # Draw the element with its color
-        cv2.rectangle(img, 
-                     (int(self.x - self.width//2), int(self.y - self.height//2)),
-                     (int(self.x + self.width//2), int(self.y + self.height//2)),
-                     self.color, -1)
-        # Add a white border
-        cv2.rectangle(img, 
-                     (int(self.x - self.width//2), int(self.y - self.height//2)),
-                     (int(self.x + self.width//2), int(self.y + self.height//2)),
-                     (255, 255, 255), 2)
-        # Add text label
-        cvzone.putTextRect(img, self.element_type,
-                          [int(self.x - self.width//2), int(self.y - self.height//2)],
-                          scale=0.5, thickness=1, offset=5)
-
-class WebsiteDesigner:
-    def __init__(self, width=1280, height=720):
-        self.width = width
-        self.height = height
-        self.elements = []
-        self.selected_element = None
-        self.dragging = False
-        self.drag_start_pos = None
-        
-        # Load and resize background image
-        bg_path = os.path.join(os.path.dirname(__file__), "Resources", "Background.png")
-        self.background = cv2.imread(bg_path)
-        if self.background is None:
-            self.background = np.zeros((height, width, 3), dtype=np.uint8)
-            print("Warning: Could not load background image. Using black background.")
-        else:
-            self.background = cv2.resize(self.background, (width, height))
-        
-        # Component palette dimensions
-        self.palette_height = 150
-        self.palette_y = height - self.palette_height
-        self.palette_width = width
-        self.component_width = 120
-        self.component_height = 80
-        self.component_spacing = 40
-        
-        # Initialize component types
-        self.component_types = ["button", "textfield", "label", "div"]
-        self.component_positions = self.calculate_component_positions()
-        self.hovered_component = None
-
-    def calculate_component_positions(self):
-        positions = {}
-        # Calculate total width of all components
-        total_width = len(self.component_types) * (self.component_width + self.component_spacing) - self.component_spacing
-        # Calculate starting x position to center the components
-        start_x = (self.width - total_width) // 2
-        
-        for i, comp_type in enumerate(self.component_types):
-            x = start_x + i * (self.component_width + self.component_spacing)
-            y = self.palette_y + self.palette_height//2
-            positions[comp_type] = (x, y)
-        return positions
-
-    def draw_palette(self, img):
-        # Draw palette background
-        cv2.rectangle(img, 
-                     (0, self.palette_y),
-                     (self.width, self.height),
-                     (50, 50, 50), -1)
-        
-        # Draw component buttons
-        for comp_type, (x, y) in self.component_positions.items():
-            # Calculate component size based on hover state
-            width = self.component_width
-            height = self.component_height
-            if comp_type == self.hovered_component:
-                width = int(width * 1.5)
-                height = int(height * 1.5)
-            
-            # Draw component button with hover effect
-            color = (150, 150, 150) if comp_type == self.hovered_component else (100, 100, 100)
-            cv2.rectangle(img,
-                         (x - width//2, y - height//2),
-                         (x + width//2, y + height//2),
-                         color, -1)
-            # Add white border
-            cv2.rectangle(img,
-                         (x - width//2, y - height//2),
-                         (x + width//2, y + height//2),
-                         (255, 255, 255), 2)
-            # Add text label
-            cvzone.putTextRect(img, comp_type,
-                             [x - width//2, y - height//2],
-                             scale=0.7, thickness=2, offset=10)
-
-    def draw(self, img):
-        # Start with a fresh copy of the background
-        frame = self.background.copy()
-        
-        # Draw existing elements
-        for element in self.elements:
-            element.draw(frame)
-        
-        # Draw palette
-        self.draw_palette(frame)
-        
-        # Draw selected element if dragging
-        if self.dragging and self.selected_element:
-            self.selected_element.draw(frame)
-            
-        # Copy only the hand points from the camera frame
-        # Create a mask for the hand points
-        mask = np.zeros_like(img)
-        cv2.circle(mask, (self.last_thumb_pos[0], self.last_thumb_pos[1]), 5, (0, 255, 0), -1)  # Green for thumb
-        cv2.circle(mask, (self.last_index_pos[0], self.last_index_pos[1]), 5, (255, 0, 0), -1)  # Blue for index
-        
-        # Combine the background with the hand points
-        frame = cv2.addWeighted(frame, 1.0, mask, 1.0, 0)
-        
-        return frame
-
-    def get_component_at_position(self, x, y):
-        self.hovered_component = None
-        for comp_type, (comp_x, comp_y) in self.component_positions.items():
-            # Use larger hit box for hover detection
-            hover_width = int(self.component_width * 1.5)
-            hover_height = int(self.component_height * 1.5)
-            if (abs(x - comp_x) < hover_width//2 and
-                abs(y - comp_y) < hover_height//2):
-                self.hovered_component = comp_type
-                # Use smaller hit box for actual selection
-                if (abs(x - comp_x) < self.component_width//2 and
-                    abs(y - comp_y) < self.component_height//2):
-                    return comp_type
-        return None
+def hand_over_element(hand_pos, element):
+    x, y = hand_pos
+    return element.rect().collidepoint(x, y)
 
 def main():
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(description='Website Designer with MediaPipe Hand Tracking')
-    parser.add_argument('--camera', type=int, default=0, help='Camera index to use (default: 0)')
-    args = parser.parse_args()
-
-    # Set HD resolution
-    GAME_WIDTH = 1280
-    GAME_HEIGHT = 720
-
-    # Initialize designer
-    designer = WebsiteDesigner(GAME_WIDTH, GAME_HEIGHT)
-    
-    # Add last position tracking to designer
-    designer.last_thumb_pos = (0, 0)
-    designer.last_index_pos = (0, 0)
-
-    # List available cameras
-    available_cameras = []
-    for i in range(10):  # Check first 10 indices
-        cap = cv2.VideoCapture(i)
-        if cap.isOpened():
-            available_cameras.append(i)
-            cap.release()
-    
-    if not available_cameras:
-        print("Error: No cameras found!")
-        return
-    
-    print(f"Available cameras: {available_cameras}")
-    
-    if args.camera not in available_cameras:
-        print(f"Error: Camera {args.camera} is not available!")
-        print(f"Please select one of the available cameras: {available_cameras}")
-        return
-
-    print(f"Attempting to open camera {args.camera}...")
-    cap = cv2.VideoCapture(args.camera)
+    pygame.init()
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("Website Designer (CV+Pygame)")
+    font = pygame.font.SysFont("Arial", 32)
+    clock = pygame.time.Clock()
+    cap = cv2.VideoCapture(0)
     if not cap.isOpened():
-        print(f"Error: Could not open camera {args.camera}")
-        print("Please check if:")
-        print("1. The camera is properly connected")
-        print("2. The camera is not being used by another application")
-        print("3. You have the correct camera index")
+        print("Error: Could not open webcam.")
         return
-
-    # Initialize hand detector
-    detector = HandDetector(detectionCon=0.8, maxHands=1)
-
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Error: Could not read frame")
-            break
-
-        # Flip the frame horizontally for a later selfie-view display
-        frame = cv2.flip(frame, 1)
-        
-        # Resize frame to match game dimensions
-        frame = cv2.resize(frame, (GAME_WIDTH, GAME_HEIGHT))
-
-        # Find hands
-        hands, _ = detector.findHands(frame, draw=False)
-
-        if hands:
-            hand = hands[0]  # Get the first hand detected
-            fingers = detector.fingersUp(hand)
-            
-            # Get hand position
-            x, y = hand['center']
-            
-            # Get thumb and index finger positions
-            thumb_tip = hand['lmList'][4]  # Thumb tip
-            index_tip = hand['lmList'][8]  # Index finger tip
-            
-            # Update last positions
-            designer.last_thumb_pos = (thumb_tip[0], thumb_tip[1])
-            designer.last_index_pos = (index_tip[0], index_tip[1])
-            
-            # Calculate distance between thumb and index finger
-            distance = np.sqrt((thumb_tip[0] - index_tip[0])**2 + (thumb_tip[1] - index_tip[1])**2)
-            
-            # Always check for hover effect with thumb position
-            designer.get_component_at_position(thumb_tip[0], thumb_tip[1])
-            
-            # Check for pinch gesture (thumb and index finger close together)
-            if distance < 30:  # Adjust this threshold as needed
-                if not designer.dragging:
-                    # Check if hand is over a component in the palette
-                    component_type = designer.get_component_at_position(thumb_tip[0], thumb_tip[1])
-                    if component_type:
-                        # Start dragging a new component
-                        designer.dragging = True
-                        designer.selected_element = WebElement(
-                            component_type,
-                            thumb_tip[0],
-                            thumb_tip[1],
-                            100,  # Default width
-                            50    # Default height
-                        )
-                        designer.drag_start_pos = (thumb_tip[0], thumb_tip[1])
-                elif designer.selected_element:  # Continue dragging
-                    # Update selected element position
-                    dx = thumb_tip[0] - designer.drag_start_pos[0]
-                    dy = thumb_tip[1] - designer.drag_start_pos[1]
-                    designer.selected_element.x += dx
-                    designer.selected_element.y += dy
-                    designer.drag_start_pos = (thumb_tip[0], thumb_tip[1])
-            else:
-                if designer.dragging:
-                    if designer.selected_element:
-                        # Only release if all fingers are open
-                        all_fingers_open = all(fingers)
-                        if all_fingers_open:
-                            # Add the element if it's in the design area
-                            if designer.selected_element.y < designer.palette_y:
-                                designer.elements.append(designer.selected_element)
-                            
-                            # Stop dragging
-                            designer.dragging = False
-                            designer.selected_element = None
-                            designer.drag_start_pos = None
-                        else:
-                            # Continue dragging if not all fingers are open
-                            dx = thumb_tip[0] - designer.drag_start_pos[0]
-                            dy = thumb_tip[1] - designer.drag_start_pos[1]
-                            designer.selected_element.x += dx
-                            designer.selected_element.y += dy
-                            designer.drag_start_pos = (thumb_tip[0], thumb_tip[1])
-
-        # Draw the designer interface with background
-        display_frame = designer.draw(frame)
-
-        # Display the frame
-        cv2.imshow("Website Designer", display_frame)
-
-        # Break the loop if 'q' is pressed
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
-
-    # Release resources
+    hands = mp_hands.Hands(min_detection_confidence=0.7, min_tracking_confidence=0.5)
+    elements = [Element('image', 50, 100), Element('text', 50, 250), Element('video', 50, 400)]
+    dragging = None
+    drag_offset = (0, 0)
+    last_drag_time = 0
+    with tracer.start_as_current_span("designer_session"):
+        running = True
+        while running:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame = cv2.flip(frame, 1)
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = hands.process(rgb)
+            hand_pos = None
+            pinch = False
+            if results.multi_hand_landmarks:
+                hand = results.multi_hand_landmarks[0]
+                index_tip = hand.landmark[8]
+                thumb_tip = hand.landmark[4]
+                hx = int(index_tip.x * WIDTH)
+                hy = int(index_tip.y * HEIGHT)
+                hand_pos = (hx, hy)
+                dist = np.hypot(index_tip.x - thumb_tip.x, index_tip.y - thumb_tip.y)
+                pinch = dist < 0.05
+            # Drag and drop logic
+            if hand_pos:
+                if pinch and dragging is None:
+                    for el in elements[::-1]:
+                        if hand_over_element(hand_pos, el):
+                            el.selected = True
+                            dragging = el
+                            drag_offset = (hand_pos[0] - el.x, hand_pos[1] - el.y)
+                            with tracer.start_as_current_span("element_selected"):
+                                pass
+                            break
+                elif not pinch and dragging:
+                    dragging.selected = False
+                    with tracer.start_as_current_span("element_dropped"):
+                        pass
+                    dragging = None
+                elif dragging and pinch:
+                    dragging.x = hand_pos[0] - drag_offset[0]
+                    dragging.y = hand_pos[1] - drag_offset[1]
+            # --- Pygame Event Handling ---
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+            # --- Pygame Rendering ---
+            screen.fill(BG_COLOR)
+            for el in elements:
+                el.draw(screen, font)
+            instr = font.render("Pinch to grab and move elements! Press 'q' to quit.", True, (0,0,0))
+            screen.blit(instr, (30, HEIGHT - 50))
+            pygame.display.flip()
+            # --- Keyboard quit ---
+            keys = pygame.key.get_pressed()
+            if keys[pygame.K_q]:
+                running = False
+            clock.tick(30)
     cap.release()
-    cv2.destroyAllWindows()
+    pygame.quit()
+    sys.exit()
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main() 

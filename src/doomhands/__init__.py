@@ -13,6 +13,10 @@ from dataclasses import dataclass
 from typing import List, Tuple, Optional, Dict
 import threading
 from collections import deque
+import pygame
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
 
 # Import the back button system
 try:
@@ -2379,6 +2383,12 @@ class UltimateDoomGame:
         
         self.back_button.draw(frame, hand_pos)
 
+# Set up OpenTelemetry tracing
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer(__name__)
+span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+trace.get_tracer_provider().add_span_processor(span_processor)
+
 def main():
     """Main function to run the Ultimate Doom Game"""
     parser = argparse.ArgumentParser(description='Ultimate Hand-Gesture Doom Game')
@@ -2468,127 +2478,128 @@ def main():
     print("   • Demon Slayer, Arsenal Master, and more!")
     print("=" * 60)
     
-    # Game loop
-    try:
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("Error: Could not read frame from camera")
-                break
+    # Replace OpenCV window with Pygame window
+    pygame.init()
+    screen = pygame.display.set_mode((screen_width, screen_height))
+    pygame.display.set_caption('Ultimate Doom - Hand Gesture Edition (CV+Pygame)')
+    clock = pygame.time.Clock()
+    with tracer.start_as_current_span("doomhands_session"):
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    print("Error: Could not read frame from camera")
+                    break
 
-            # Mirror frame for natural interaction
-            frame = cv2.flip(frame, 1)
-            frame = cv2.resize(frame, (screen_width, screen_height))
+                # Mirror frame for natural interaction
+                frame = cv2.flip(frame, 1)
+                frame = cv2.resize(frame, (screen_width, screen_height))
 
-            # Process hand tracking
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results = game.hands.process(rgb_frame)
+                # Process hand tracking
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                results = game.hands.process(rgb_frame)
 
-            # Reset hand tracking
-            game.left_hand = None
-            game.right_hand = None
-            game.weapon_hand = None
+                # Reset hand tracking
+                game.left_hand = None
+                game.right_hand = None
+                game.weapon_hand = None
 
-            # Process detected hands
-            if results.multi_hand_landmarks and results.multi_handedness:
-                for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-                    hand_label = handedness.classification[0].label
-                    
-                    if hand_label == "Left":
-                        game.left_hand = hand_landmarks
-                    else:
-                        game.right_hand = hand_landmarks
+                # Process detected hands
+                if results.multi_hand_landmarks and results.multi_handedness:
+                    for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
+                        hand_label = handedness.classification[0].label
+                        
+                        if hand_label == "Left":
+                            game.left_hand = hand_landmarks
+                        else:
+                            game.right_hand = hand_landmarks
 
-            # Handle gesture input
-            game.handle_gesture_input()
+                # Handle gesture input
+                game.handle_gesture_input()
 
-            # Handle keyboard input
-            key = cv2.waitKey(1) & 0xFF
-            
-            # Handle back button
-            hand_pos = None
-            if results.multi_hand_landmarks:
-                wrist = results.multi_hand_landmarks[0].landmark[0]
-                hand_pos = (int(wrist.x * screen_width), int(wrist.y * screen_height))
-            
-            if game.back_button.handle_input(key, 
-                                           results.multi_hand_landmarks[0] if results.multi_hand_landmarks else None, 
-                                           hand_pos):
-                print("🚪 Exiting Ultimate Doom... Thanks for playing!")
-                break
-
-            # Handle game state changes
-            if game.state == GameState.MAIN_MENU:
-                if key == ord(' ') or key == 13:  # Space or Enter
-                    if game.menu_selection == 0:  # New Game
-                        game.start_new_game()
-                    elif game.menu_selection == 3:  # Exit
+                # Handle pygame events
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
                         break
-                elif key == ord('w') or key == ord('W'):  # Up
-                    game.menu_selection = (game.menu_selection - 1) % 4
-                elif key == ord('s') or key == ord('S'):  # Down
-                    game.menu_selection = (game.menu_selection + 1) % 4
+                # Handle keyboard input (from pygame)
+                keys = pygame.key.get_pressed()
+                if keys[pygame.K_q] or keys[pygame.K_ESCAPE]:
+                    break
+
+                # Handle game state changes
+                if game.state == GameState.MAIN_MENU:
+                    if keys[pygame.K_SPACE] or keys[pygame.K_RETURN]:  # Space or Enter
+                        if game.menu_selection == 0:  # New Game
+                            game.start_new_game()
+                        elif game.menu_selection == 3:  # Exit
+                            break
+                    elif keys[pygame.K_w] or keys[pygame.K_W]:  # Up
+                        game.menu_selection = (game.menu_selection - 1) % 4
+                    elif keys[pygame.K_s] or keys[pygame.K_S]:  # Down
+                        game.menu_selection = (game.menu_selection + 1) % 4
+                
+                elif game.state == GameState.LEVEL_COMPLETE:
+                    if keys[pygame.K_ANY]:  # Any key pressed
+                        game.load_level(game.current_level + 1)
+                        game.state = GameState.PLAYING
+                
+                elif game.state == GameState.GAME_OVER:
+                    if keys[pygame.K_ANY]:  # Any key pressed
+                        game.state = GameState.MAIN_MENU
+
+                # Handle general controls
+                if keys[pygame.K_q] or keys[pygame.K_ESCAPE]:  # 'q' or ESC
+                    break
+                elif keys[pygame.K_p]:  # Pause
+                    if game.state == GameState.PLAYING:
+                        game.state = GameState.PAUSED
+                    elif game.state == GameState.PAUSED:
+                        game.state = GameState.PLAYING
+                elif keys[pygame.K_r] and game.state != GameState.PLAYING:  # Restart
+                    game.start_new_game()
+                elif keys[pygame.K_f]:  # Toggle fullscreen
+                    if args.windowed:
+                        print("⚠️  Fullscreen toggle not available in windowed mode. Use --fullscreen argument.")
+                    else:
+                        print("🔄 Toggle fullscreen with 'F' key (not implemented in this version)")
+
+                # Update game
+                game.update()
+
+                # Draw everything
+                game.draw(frame)
+
+                # Show frame in Pygame window
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                surf = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+                screen.blit(surf, (0, 0))
+                pygame.display.flip()
+                clock.tick(30)
+        except KeyboardInterrupt:
+            print("\n🛑 Game interrupted by user")
+        except Exception as e:
+            print(f"💥 Game crashed with error: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            cap.release()
+            pygame.quit()
+            sys.exit()
+            # Cleanup
+            # cap.release()
+            # cv2.destroyAllWindows()
             
-            elif game.state == GameState.LEVEL_COMPLETE:
-                if key != 255:  # Any key pressed
-                    game.load_level(game.current_level + 1)
-                    game.state = GameState.PLAYING
+            # Print final statistics
+            if hasattr(game, 'stats'):
+                print("\n📊 FINAL GAME STATISTICS:")
+                print(f"   💀 Enemies Killed: {game.stats.enemies_killed}")
+                print(f"   🎯 Accuracy: {game.stats.get_accuracy():.1f}%") 
+                print(f"   📈 Final Score: {game.score:08d}")
+                print(f"   🏁 Levels Completed: {game.stats.levels_completed}")
+                print(f"   ⏰ Time Played: {int(game.stats.playtime)}s")
             
-            elif game.state == GameState.GAME_OVER:
-                if key != 255:  # Any key pressed
-                    game.state = GameState.MAIN_MENU
-
-            # Handle general controls
-            if key == ord('q') or key == 27:  # 'q' or ESC
-                break
-            elif key == ord('p'):  # Pause
-                if game.state == GameState.PLAYING:
-                    game.state = GameState.PAUSED
-                elif game.state == GameState.PAUSED:
-                    game.state = GameState.PLAYING
-            elif key == ord('r') and game.state != GameState.PLAYING:  # Restart
-                game.start_new_game()
-            elif key == ord('f'):  # Toggle fullscreen
-                if args.windowed:
-                    print("⚠️  Fullscreen toggle not available in windowed mode. Use --fullscreen argument.")
-                else:
-                    print("🔄 Toggle fullscreen with 'F' key (not implemented in this version)")
-
-            # Update game
-            game.update()
-
-            # Draw everything
-            game.draw(frame)
-
-            # Show frame
-            cv2.imshow('Ultimate Doom - Hand Gesture Edition', frame)
-
-            # Performance monitoring
-            if hasattr(game, 'current_fps') and game.current_fps < 20:
-                print(f"⚠️  Performance warning: FPS dropped to {game.current_fps}")
-
-    except KeyboardInterrupt:
-        print("\n🛑 Game interrupted by user")
-    except Exception as e:
-        print(f"💥 Game crashed with error: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        # Cleanup
-        cap.release()
-        cv2.destroyAllWindows()
-        
-        # Print final statistics
-        if hasattr(game, 'stats'):
-            print("\n📊 FINAL GAME STATISTICS:")
-            print(f"   💀 Enemies Killed: {game.stats.enemies_killed}")
-            print(f"   🎯 Accuracy: {game.stats.get_accuracy():.1f}%") 
-            print(f"   📈 Final Score: {game.score:08d}")
-            print(f"   🏁 Levels Completed: {game.stats.levels_completed}")
-            print(f"   ⏰ Time Played: {int(game.stats.playtime)}s")
-        
-        print("\n👹 RIP AND TEAR COMPLETE! 👹")
-        print("Thanks for playing Ultimate Doom - Hand Gesture Edition!")
+            print("\n👹 RIP AND TEAR COMPLETE! 👹")
+            print("Thanks for playing Ultimate Doom - Hand Gesture Edition!")
 
 if __name__ == "__main__":
     main()

@@ -7,6 +7,10 @@ import time
 import sys
 import os
 import argparse
+import pygame
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
 
 # Import the back button system
 try:
@@ -1481,11 +1485,12 @@ def main():
     # Debug mode flag
     show_hand_debug = False
 
-    # Create window and set to full screen
-    cv2.namedWindow('Retro Duck Hunt', cv2.WINDOW_NORMAL)
-    cv2.setWindowProperty('Retro Duck Hunt', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-    cv2.resizeWindow('Retro Duck Hunt', 1280, 720)
-    cv2.moveWindow('Retro Duck Hunt', 0, 0)
+    # --- Pygame setup ---
+    pygame.init()
+    screen = pygame.display.set_mode((1280, 720))
+    pygame.display.set_caption('Retro Duck Hunt (CV+Pygame)')
+    font = pygame.font.SysFont("Arial", 32)
+    clock = pygame.time.Clock()
 
     print("🦆 RETRO DUCK HUNT - ENHANCED EDITION")
     print("=" * 50)
@@ -1500,119 +1505,118 @@ def main():
     print("   ❌ Press 'Q' or 'ESC' to quit")
     print("=" * 50)
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            print("Error: Could not read frame")
-            break
+    # Set up OpenTelemetry tracing
+    trace.set_tracer_provider(TracerProvider())
+    tracer = trace.get_tracer(__name__)
+    span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+    trace.get_tracer_provider().add_span_processor(span_processor)
 
-        frame = cv2.flip(frame, 1)
-        frame = cv2.resize(frame, (1280, 720))
+    with tracer.start_as_current_span("duckhunt_session"):
+        running = True
+        while running:
+            ret, frame = cap.read()
+            if not ret:
+                print("Error: Could not read frame")
+                break
 
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = game.hands.process(rgb_frame)
+            frame = cv2.flip(frame, 1)
+            frame = cv2.resize(frame, (1280, 720))
 
-        # Reset hand tracking
-        game.hand_position = None
-        game.gun_position = None
-        game.aiming = False
-        game.thumb_trigger_active = False
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            results = game.hands.process(rgb_frame)
 
-        if results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                # Get hand position for back button
-                hand_x = int(hand_landmarks.landmark[9].x * 1280)
-                hand_y = int(hand_landmarks.landmark[9].y * 720)
-                game.hand_position = (hand_x, hand_y)
+            # Reset hand tracking
+            game.hand_position = None
+            game.gun_position = None
+            game.aiming = False
+            game.thumb_trigger_active = False
 
-                # Enhanced gun gesture detection with improved stability
-                is_gun, gun_pos, shooting_gesture = game.detect_enhanced_gun_gesture(hand_landmarks)
-                
-                if is_gun:
-                    game.aiming = True
-                    game.gun_position = gun_pos
-                    game.thumb_trigger_active = shooting_gesture
-                    game.last_gesture_time = time.time()  # Update gesture time
+            if results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    # Get hand position for back button
+                    hand_x = int(hand_landmarks.landmark[9].x * 1280)
+                    hand_y = int(hand_landmarks.landmark[9].y * 720)
+                    game.hand_position = (hand_x, hand_y)
+
+                    # Enhanced gun gesture detection with improved stability
+                    is_gun, gun_pos, shooting_gesture = game.detect_enhanced_gun_gesture(hand_landmarks)
                     
-                    # Handle button interactions if game is completed
-                    if game.game_completed and shooting_gesture:
-                        button_result = game.handle_button_interactions(shooting_gesture, gun_pos)
-                        if button_result == "back":
-                            print("Returning to app store...")
-                            break
-                        elif button_result:
-                            # Game was reset, continue
-                            continue
-                    
-                    # Shoot when quarter-circle gesture is detected (only if game is active)
-                    elif shooting_gesture and game.can_shoot and not game.game_completed:
-                        game.shoot(gun_pos[0], gun_pos[1])
-                        print(f"🔫 SHOT FIRED at ({gun_pos[0]}, {gun_pos[1]}) - Quarter-circle gesture detected!")
+                    if is_gun:
+                        game.aiming = True
+                        game.gun_position = gun_pos
+                        game.thumb_trigger_active = shooting_gesture
+                        game.last_gesture_time = time.time()  # Update gesture time
                         
-                        # Clear thumb position history after shooting to prevent multiple shots
-                        game.thumb_positions.clear()
-                else:
-                    # Debug: show when gesture is not detected
-                    if show_hand_debug:
-                        print("❌ Gun gesture not detected - check finger positions")
-        else:
-            # No hand detected - maintain cursor for a short time if we had one recently
-            if game.last_index_position and game.index_finger_detected:
-                # Keep cursor visible for 0.5 seconds after hand is lost
-                if time.time() - game.last_gesture_time < 0.5:
-                    game.aiming = True
-                    game.gun_position = game.last_index_position
-                else:
-                    game.index_finger_detected = False
+                        # Handle button interactions if game is completed
+                        if game.game_completed and shooting_gesture:
+                            button_result = game.handle_button_interactions(shooting_gesture, gun_pos)
+                            if button_result == "back":
+                                print("Returning to app store...")
+                                running = False
+                                break
+                            elif button_result:
+                                continue
+                        
+                        # Shoot when quarter-circle gesture is detected (only if game is active)
+                        elif shooting_gesture and game.can_shoot and not game.game_completed:
+                            with tracer.start_as_current_span("shot_fired"):
+                                game.shoot(gun_pos[0], gun_pos[1])
+                            print(f"🔫 SHOT FIRED at ({gun_pos[0]}, {gun_pos[1]}) - Quarter-circle gesture detected!")
+                            
+                            # Clear thumb position history after shooting to prevent multiple shots
+                            game.thumb_positions.clear()
+                    else:
+                        # Debug: show when gesture is not detected
+                        if show_hand_debug:
+                            print("❌ Gun gesture not detected - check finger positions")
+            else:
+                # No hand detected - maintain cursor for a short time if we had one recently
+                if game.last_index_position and game.index_finger_detected:
+                    # Keep cursor visible for 0.5 seconds after hand is lost
+                    if time.time() - game.last_gesture_time < 0.5:
+                        game.aiming = True
+                        game.gun_position = game.last_index_position
+                    else:
+                        game.index_finger_detected = False
 
-        # Handle back button
-        key = cv2.waitKey(1) & 0xFF
-        if game.back_button.handle_input(key, results.multi_hand_landmarks[0] if results.multi_hand_landmarks else None, game.hand_position):
-            print("Returning to app store...")
-            break
+            # Handle back button (use pygame events for quit)
+            # --- Pygame Event Handling ---
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_q or event.key == pygame.K_ESCAPE:
+                        running = False
+                    elif event.key == pygame.K_r:
+                        game = RetroDuckHuntGame(1280, 720)
+                    elif event.key == pygame.K_h:
+                        show_hand_debug = not show_hand_debug
+                        print(f"🐛 Hand debug: {'ON' if show_hand_debug else 'OFF'}")
+                    elif event.key == pygame.K_f:
+                        pygame.display.toggle_fullscreen()
 
-                # Update and draw game
-        game.update()
-        game.draw(frame)
-        
-        # Draw hand debug if enabled
-        if show_hand_debug and results.multi_hand_landmarks:
-            for hand_landmarks in results.multi_hand_landmarks:
-                game.draw_hand_debug(frame, hand_landmarks)
-        
-        cv2.imshow('Retro Duck Hunt', frame)
-        
-        # Ensure full screen mode is maintained
-        try:
-            current_prop = cv2.getWindowProperty('Retro Duck Hunt', cv2.WND_PROP_FULLSCREEN)
-            if current_prop != cv2.WINDOW_FULLSCREEN:
-                cv2.setWindowProperty('Retro Duck Hunt', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                cv2.moveWindow('Retro Duck Hunt', 0, 0)
-        except:
-            pass
-
-        # Keyboard controls
-        if key == ord('q') or key == 27:
-            break
-        elif key == ord('r'):  # Restart
-            game = RetroDuckHuntGame(1280, 720)
-        elif key == ord('h'):  # Toggle hand debug
-            show_hand_debug = not show_hand_debug
-            print(f"🐛 Hand debug: {'ON' if show_hand_debug else 'OFF'}")
-        elif key == ord('f'):  # Toggle full screen
-            try:
-                current_prop = cv2.getWindowProperty('Retro Duck Hunt', cv2.WND_PROP_FULLSCREEN)
-                if current_prop == cv2.WINDOW_FULLSCREEN:
-                    cv2.setWindowProperty('Retro Duck Hunt', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
-                else:
-                    cv2.setWindowProperty('Retro Duck Hunt', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
-                    cv2.moveWindow('Retro Duck Hunt', 0, 0)
-            except:
-                pass
+            # Update and draw game
+            game.update()
+            game.draw(frame)
+            
+            # Draw hand debug if enabled
+            if show_hand_debug and results.multi_hand_landmarks:
+                for hand_landmarks in results.multi_hand_landmarks:
+                    game.draw_hand_debug(frame, hand_landmarks)
+            
+            # --- Pygame Rendering ---
+            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            surf = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+            screen.blit(surf, (0, 0))
+            instr = font.render("Aim and shoot with your hand! Press 'q' to quit.", True, (0,0,0))
+            screen.blit(instr, (30, 700))
+            pygame.display.flip()
+            clock.tick(30)
 
     cap.release()
-    cv2.destroyAllWindows()
+    pygame.quit()
     print("🎮 Thanks for playing Retro Duck Hunt!")
+    sys.exit()
 
 if __name__ == "__main__":
     main()
