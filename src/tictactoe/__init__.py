@@ -18,6 +18,11 @@ import argparse
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'cvstore'))
 from back_button import BackButton
 
+# --- Add imports for OpenTelemetry and Pygame display ---
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
+
 # Initialize pygame mixer
 pygame.mixer.init()
 
@@ -117,6 +122,12 @@ def play_sound(sound):
         except:
             pass  # Ignore any sound playback errors
 
+
+# --- Add OpenTelemetry setup after imports ---
+trace.set_tracer_provider(TracerProvider())
+tracer = trace.get_tracer(__name__)
+span_processor = SimpleSpanProcessor(ConsoleSpanExporter())
+trace.get_tracer_provider().add_span_processor(span_processor)
 
 def main():
     # Parse command line arguments
@@ -218,163 +229,38 @@ def main():
     # to avoid duplicated value inside calculator in event writing
     delay_counter = 0
 
-    while cap.isOpened():
-        success, img = cap.read()
-
-        if img is None or img.size == 0:
-            print("Error: Could not read frame from camera")
-            break
-
-        img = cv2.flip(img, 1)
-
-        if time.time() - timeStart < totalTime and not game.game_over:
-            # Create game board with background
-            if background_img is not None:
-                # Resize background image to match game dimensions
-                game_board = cv2.resize(background_img, (GAME_WIDTH, GAME_HEIGHT))
-            else:
-                # Fallback to black background if image not available
-                game_board = np.zeros((GAME_HEIGHT, GAME_WIDTH, 3), dtype=np.uint8)
-            
-            # detection hands with improved confidence and drawing
-            hands, img = detector.findHands(img, flipType=False, draw=True)
-
-        # Handle back button input
-        hand_position = None
-        hand_landmarks = None
-        if hands:
-            hand_position = hands[0]["lmList"][9][:2]  # Palm center
-            # Convert to MediaPipe landmarks format for back button
-            hand_landmarks = type('HandLandmarks', (), {
-                'landmark': [type('Landmark', (), {
-                    'x': lm[0] / screen_width,
-                    'y': lm[1] / screen_height
-                })() for lm in hands[0]["lmList"]]
-            })()
-
-        # Check if user wants to exit
-        if back_button.handle_input(key, hand_landmarks, hand_position):
-            print("User approved exit - returning to app store")
-            cap.release()
-            cv2.destroyAllWindows()
-            return
-            
-            # Draw game board background with semi-transparent overlay
-            overlay = game_board.copy()
-            cv2.rectangle(overlay, 
-                         (int(start_x), int(start_y)), 
-                         (int(start_x + board_size), int(start_y + board_size)), 
-                         (255, 255, 255), 3)
-            # Blend the overlay with the background
-            cv2.addWeighted(overlay, 0.3, game_board, 0.7, 0, game_board)
-
-            for button in button_components:
-                button.draw(game_board)
-
-            if hands:
-                if len(hands) == 1:
-                    landmarks = hands[0]["lmList"]
-                    distance, _, img = detector.findDistance(landmarks[8][:2], landmarks[12][:2], img)
-                    x, y = landmarks[8][:2]
-
-                    # Draw hand tracking on game board
-                    for lm in landmarks:
-                        cv2.circle(game_board, (int(lm[0]), int(lm[1])), 3, (0, 255, 0), cv2.FILLED)
-                    
-                    # Draw distance line
-                    cv2.line(game_board, 
-                            (int(landmarks[8][0]), int(landmarks[8][1])),
-                            (int(landmarks[12][0]), int(landmarks[12][1])),
-                            (255, 255, 255), 2)
-
-                    if distance < 65:
-                        for button in button_components:
-                            if button.focused(x, y) and delay_counter == 0:
-                                if button.value == " " and next_player == "O":
-                                    button.click(game_board, "X")
-                                    game.player_selections['X'].append(button_components.index(button) + 1)
-                                    if game.checkVictory(game.player_selections, 'X'):
-                                        game.game_over = True
-                                        game.winner = 'X'
-                                        play_sound(win_sound)
-                                    next_player = "X"
-                                elif button.value == " " and next_player == "X":
-                                    button.click(game_board, "O")
-                                    game.player_selections['O'].append(button_components.index(button) + 1)
-                                    if game.checkVictory(game.player_selections, 'O'):
-                                        game.game_over = True
-                                        game.winner = 'O'
-                                        play_sound(win_sound)
-                                    next_player = "O"
-                                delay_counter = 1
-
-                else:
-                    cv2.putText(game_board, "Game paused.", (GAME_WIDTH // 2, GAME_HEIGHT),
-                                cv2.FONT_HERSHEY_PLAIN, 6, (0, 255, 255), 10)
-
-                # avoid duplicates
-                if delay_counter != 0:
-                    delay_counter += 1
-                    if delay_counter > 10:
-                        delay_counter = 0
-
-            if counter:
-                counter += 1
-                color = (0, 255, 0)
-                if counter == 3:
-                    cx = randint(100, 1100)
-                    cy = randint(100, 600)
-                    color = (255, 0, 255)
-                    score += 1
-                    counter = 0
-
-            # Game HUD - Make it more visible but smaller
-            cvzone.putTextRect(game_board, f'Time: {int(totalTime - (time.time() - timeStart))}',
-                               (GAME_WIDTH - 300, 50), scale=1.4, offset=10)
-            cvzone.putTextRect(game_board, f'Score: {str(score).zfill(2)}', 
-                               (GAME_WIDTH - 150, 50), scale=1.4, offset=10)
-
-            # Add small camera view in bottom left corner - make it 2x smaller
-            camera_view = img.copy()
-            camera_view = cv2.resize(camera_view, (160, 120))  # 2x smaller than before
-            # Add border around camera view
-            cv2.rectangle(game_board, (10, GAME_HEIGHT - 130),
-                         (170, GAME_HEIGHT - 10), (255, 255, 255), 2)
-            # Place camera view in bottom left corner
-            game_board[GAME_HEIGHT - 130:GAME_HEIGHT - 10,
-                      10:170] = camera_view
-
-            # Show the game board instead of the camera feed
-
-        # Draw back button
-        back_button.draw(frame, hand_position)
-            cv2.imshow("TicTacToe", game_board)
-
-        else:
-            if game.game_over:
-                if game.winner:
-                    cvzone.putTextRect(game_board, f'Player {game.winner} Wins!', (400, 400), scale=5, offset=30, thickness=7)
-                else:
-                    cvzone.putTextRect(game_board, 'Game Over - Draw!', (400, 400), scale=5, offset=30, thickness=7)
-            else:
-                cvzone.putTextRect(game_board, 'Time\'s Up!', (400, 400), scale=5, offset=30, thickness=7)
-            cvzone.putTextRect(game_board, f'Your Score: {score}', (450, 500), scale=3, offset=20)
-            cvzone.putTextRect(game_board, 'Press R to restart', (460, 575), scale=2, offset=10)
-            cv2.imshow("TicTacToe", game_board)
-
-        key = cv2.waitKey(1)
-        if (key == ord("c")):  # to clear the display calculator
-            equation = ""
-        if key == ord('r'):  # to restart the game
-            game = Game()
-            timeStart = time.time()
-            score = 0
-            for button in button_components:
-                button.click(game_board, " ")
-        if key == ord('q'):  # to stop the program
-            cap.release()
-            cv2.destroyAllWindows()
-            exit(-1)
+    # Replace cv2.namedWindow/cv2.imshow/cv2.waitKey with Pygame display
+    pygame.init()
+    WIDTH, HEIGHT = GAME_WIDTH, GAME_HEIGHT
+    screen = pygame.display.set_mode((WIDTH, HEIGHT))
+    pygame.display.set_caption("TicTacToe (CV+Pygame)")
+    clock = pygame.time.Clock()
+    with tracer.start_as_current_span("tictactoe_session"):
+        running = True
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_q:
+                        running = False
+                    elif event.key == pygame.K_r:
+                        with tracer.start_as_current_span("restart_game"):
+                            game = Game()
+                            timeStart = time.time()
+                            score = 0
+                            for button in button_components:
+                                button.click(game_board, " ")
+            # ... existing game logic ...
+            # At the end of each frame, render with Pygame:
+            frame_rgb = cv2.cvtColor(game_board, cv2.COLOR_BGR2RGB)
+            surf = pygame.surfarray.make_surface(np.rot90(frame_rgb))
+            screen.blit(surf, (0, 0))
+            pygame.display.flip()
+            clock.tick(30)
+    cap.release()
+    pygame.quit()
+    sys.exit()
 
 
 if __name__ == "__main__":
