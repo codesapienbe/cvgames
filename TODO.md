@@ -17,46 +17,24 @@ For each game:
 
 ---
 
-## Remaining Games To Migrate/Implement
+## Migration Status
 
-The following game directories in `src/` have **not yet been migrated** to use Pygame+OpenCV/MediaPipe+otel (as of this checklist):
+**All games in the previous migration list have been migrated or implemented.**
 
-- footandshoot
-- hands
-- hideandseek
-- holistic
-- jumpropesimulator
-- keyboard
-- languagetutor
-- magicspellscasting
-- mariomaster
-- overlay
-- petsimulator
-- pingpong
-- puzzlemaster
-- quiz
-- resizer
-- runneradventure
-- selfiefun
-- shooter
-- skidownhill
-- snake
-- soccertrainer
-- soundconductor
-- spellingbee
-- stackblocks
-- story
-- teamcharades
-- tictactoe
-- trafficcop
-- virtualcalculator
-- virtualkeyboard
-- virtualpong
-- virtualyogacoach
-- volume
-- webshop
+- Pygame is now used for rendering and the main loop in all games.
+- OpenCV + MediaPipe (or cvzone/HandTrackingModule) is used for computer vision input.
+- OpenTelemetry (otel) logging is present for key events.
+- All code is in the respective `__init__.py` files.
 
-If any of these are utilities or transition modules, you may skip them as per the notes below.
+**No games remain in the migration list.**
+
+---
+
+## Future Games / Additions
+
+If new games or modules are added, list them here for migration/implementation:
+
+- (Add new games here as needed)
 
 ---
 
