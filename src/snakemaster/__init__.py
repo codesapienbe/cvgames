@@ -157,7 +157,7 @@ def main():
                         with tracer.start_as_current_span("restart_game"):
                             game.__init__(food_path)
             success, img = cap.read()
-            img = cv2.flip(img, 1)
+            # img = cv2.flip(img, 1)
             hands, img = detector.findHands(img, flipType=False)
             hand_position = None
             hand_landmarks = None

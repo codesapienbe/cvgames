@@ -14,6 +14,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, ConsoleSpanExporter
 import sqlite3
+import logging
 
 class AppState(Enum):
     """Application state enumeration"""
@@ -1091,14 +1092,39 @@ class AppStore:
         print("   - Press 'A' for previous page, 'D' for next page")
         print("   - Press 'Q' or 'ESC' to quit")
         print("=" * 50)
+        # Structured logging setup for application.log
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(message)s',
+            handlers=[logging.FileHandler('application.log', encoding='utf-8')]
+        )
+
+        def log_structured(level, component, message, **kwargs):
+            log_entry = {
+                'timestamp': time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime()),
+                'level': level,
+                'component': component,
+                'message': message,
+            }
+            log_entry.update(kwargs)
+            logging.log(getattr(logging, level), json.dumps(log_entry))
+
         with self.tracer.start_as_current_span("appstore_session"):
             while not self.shutting_down:
                 try:
                     # --- Computer Vision Input ---
                     ret, frame = self.cap.read()
-                    if not ret:
-                        print("❌ Failed to capture frame")
-                        break
+                    if not ret or frame is None or not hasattr(frame, 'shape') or frame.shape[0] == 0 or frame.shape[1] == 0:
+                        log_structured(
+                            'ERROR',
+                            'appstore',
+                            'Camera frame read failed',
+                            camera_index=self.current_camera_index,
+                            camera_name=self.current_camera_name,
+                            event='frame_read_error'
+                        )
+                        time.sleep(0.1)
+                        continue
                     frame = cv2.flip(frame, 1)
                     frame = cv2.resize(frame, (self.screen_width, self.screen_height))
                     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -1127,6 +1153,15 @@ class AppStore:
                     pygame.display.flip()
                     self.clock.tick(30)
                 except Exception as e:
+                    log_structured(
+                        'ERROR',
+                        'appstore',
+                        'Error in main loop',
+                        error=str(e),
+                        camera_index=getattr(self, 'current_camera_index', None),
+                        camera_name=getattr(self, 'current_camera_name', None),
+                        event='main_loop_exception'
+                    )
                     print(f"❌ Error in main loop: {e}")
                     break
             self.cleanup()
