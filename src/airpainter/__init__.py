@@ -1221,15 +1221,21 @@ class AirPainterUI:
         if element_id not in self.hover_start_time:
             self.hover_start_time[element_id] = current_time
             self.current_hover_element = element_id
+            logger.info(f"Started hovering over: {element_id}")
         
         if self.current_hover_element == element_id:
             elapsed_time = current_time - self.hover_start_time[element_id]
             self.hover_progress = min(1.0, elapsed_time / self.selection_hold_time)
+            
+            # Debug logging for progress
+            if elapsed_time >= self.selection_hold_time:
+                logger.info(f"Selection complete for: {element_id}")
         else:
             # Different element, reset progress
             self.hover_start_time[element_id] = current_time
             self.current_hover_element = element_id
             self.hover_progress = 0.0
+            logger.info(f"Switched to hovering over: {element_id}")
     
     def reset_hover_progress(self, element_id):
         """Reset hover progress for an element"""
@@ -1683,6 +1689,10 @@ class AirPainterUI:
                         # Close menu after selection
                         self.show_circular_menus = False
                         self.menu_activated = False
+                        # Reset all hover progress to prevent multiple selections
+                        self.hover_start_time.clear()
+                        self.current_hover_element = None
+                        self.hover_progress = 0.0
                 else:
                     self.reset_hover_progress(f"circular_tool_{tool.name.lower()}")
                     current_radius = self.menu_button_radius
@@ -1752,6 +1762,10 @@ class AirPainterUI:
                         # Close menu after selection
                         self.show_circular_menus = False
                         self.menu_activated = False
+                        # Reset all hover progress to prevent multiple selections
+                        self.hover_start_time.clear()
+                        self.current_hover_element = None
+                        self.hover_progress = 0.0
                 else:
                     self.reset_hover_progress(f"circular_color_{i}")
                     current_radius = self.menu_button_radius
