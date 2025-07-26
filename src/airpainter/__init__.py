@@ -502,10 +502,12 @@ class AirPainterUI:
         
         # Two-hand circular menu system
         self.show_circular_menus = False
+        self.menu_activated = False  # Track if menu has been activated
         self.left_hand_pos = None
         self.right_hand_pos = None
         self.left_hand_landmarks = None
         self.right_hand_landmarks = None
+        self.active_control_hand = "right"  # Which hand is controlling the menu
         self.circular_menu_radius = 150
         self.menu_button_radius = 30
         self.menu_spacing = 20
@@ -809,9 +811,7 @@ class AirPainterUI:
                     center_y = max(50, min(center_y, self.height - panel_height - 50))
                     
                     self.draw_image_selection_buttons(center_x, center_y, panel_width, panel_height)
-            else:
-                # Draw tools and colors on the right side
-                self.draw_right_panel()
+            # Remove the else clause - don't show any UI when in PAINTING state and circular menus are not active
     
     def draw_initial_selection_screen(self):
         """Draw initial selection screen with 3 options"""
@@ -1276,6 +1276,67 @@ class AirPainterUI:
             text_rect = text_surface.get_rect(center=(center_x, y - 20))
             self.screen.blit(text_surface, text_rect)
     
+    def draw_circular_progress_indicator(self, center_pos, radius, progress):
+        """Draw a beautiful circular progress indicator for circular menus"""
+        if progress <= 0:
+            return
+            
+        center_x, center_y = center_pos
+        
+        # Progress ring properties
+        ring_width = 6
+        outer_radius = radius + 15
+        inner_radius = radius + 8
+        
+        # Colors
+        background_color = (50, 50, 50, 100)  # Semi-transparent background
+        progress_color = self.ui_colors['success']  # Green for progress
+        text_color = self.ui_colors['text_primary']
+        
+        # Draw background ring
+        pygame.draw.circle(self.screen, background_color, (center_x, center_y), outer_radius, ring_width)
+        
+        # Draw progress arc
+        if progress > 0:
+            # Calculate arc angles
+            start_angle = -90  # Start from top
+            end_angle = start_angle + (360 * progress)
+            
+            # Draw progress arc with multiple layers for better visibility
+            for i in range(3):
+                current_radius = outer_radius - i * 2
+                pygame.draw.arc(self.screen, progress_color, 
+                              (center_x - current_radius, center_y - current_radius, 
+                               current_radius * 2, current_radius * 2),
+                              np.radians(start_angle), np.radians(end_angle), ring_width - i)
+        
+        # Draw countdown text
+        if progress < 1.0:
+            remaining_time = self.selection_hold_time * (1.0 - progress)
+            if remaining_time >= 1.0:
+                countdown_text = f"{remaining_time:.0f}s"
+            else:
+                countdown_text = f"{remaining_time:.1f}s"
+            
+            # Create a semi-transparent background for text
+            text_surface = self.info_font.render(countdown_text, True, text_color)
+            text_rect = text_surface.get_rect(center=(center_x, center_y - outer_radius - 25))
+            
+            # Draw text background
+            bg_rect = (text_rect.x - 10, text_rect.y - 5, text_rect.width + 20, text_rect.height + 10)
+            pygame.draw.rect(self.screen, (0, 0, 0, 150), bg_rect, border_radius=15)
+            
+            # Draw text
+            self.screen.blit(text_surface, text_rect)
+        
+        # Draw pulsing effect when almost complete
+        if progress > 0.8:
+            pulse_alpha = int(255 * (1.0 - progress) * 5)  # Pulse faster as it completes
+            pulse_surface = pygame.Surface((outer_radius * 2 + 20, outer_radius * 2 + 20), pygame.SRCALPHA)
+            pygame.draw.circle(pulse_surface, (*progress_color, pulse_alpha), 
+                             (outer_radius + 10, outer_radius + 10), outer_radius + 10, 3)
+            self.screen.blit(pulse_surface, (center_x - outer_radius - 10, center_y - outer_radius - 10))
+    
     def check_selection_complete(self, element_id):
         """Check if selection is complete for an element"""
         if element_id in self.hover_start_time:
@@ -1387,6 +1448,7 @@ class AirPainterUI:
             self.hand_confidence = 0.0
             self.cursor_pos = None
             self.show_circular_menus = False
+            self.menu_activated = False  # Reset menu activation when no hands detected
             return None, None, None
         
         # Handle two hands for circular menus
@@ -1399,30 +1461,70 @@ class AirPainterUI:
             left_fist = self.is_hand_closed(left_hand)
             right_fist = self.is_hand_closed(right_hand)
             
+            # Convert hand positions to screen coordinates
+            left_wrist = left_hand.landmark[0]
+            right_wrist = right_hand.landmark[0]
+            
+            self.left_hand_pos = (int(left_wrist.x * self.width), int(left_wrist.y * self.height))
+            self.right_hand_pos = (int(right_wrist.x * self.width), int(right_wrist.y * self.height))
+            
+            # Convert landmarks to list format
+            self.left_hand_landmarks = []
+            for landmark in left_hand.landmark:
+                self.left_hand_landmarks.append([landmark.x, landmark.y, landmark.z])
+            
+            self.right_hand_landmarks = []
+            for landmark in right_hand.landmark:
+                self.right_hand_landmarks.append([landmark.x, landmark.y, landmark.z])
+            
+            # Check if both hands are closed to show menus
             if left_fist and right_fist:
                 # Show circular menus
                 self.show_circular_menus = True
+                self.menu_activated = True  # Mark that menu is activated
                 
-                # Convert hand positions to screen coordinates
-                left_wrist = left_hand.landmark[0]
-                right_wrist = right_hand.landmark[0]
-                
-                self.left_hand_pos = (int(left_wrist.x * self.width), int(left_wrist.y * self.height))
-                self.right_hand_pos = (int(right_wrist.x * self.width), int(right_wrist.y * self.height))
-                
-                # Convert landmarks to list format
-                self.left_hand_landmarks = []
-                for landmark in left_hand.landmark:
-                    self.left_hand_landmarks.append([landmark.x, landmark.y, landmark.z])
-                
-                self.right_hand_landmarks = []
-                for landmark in right_hand.landmark:
-                    self.right_hand_landmarks.append([landmark.x, landmark.y, landmark.z])
-                
-                # Use right hand for cursor (for painting)
+                # Use right hand for cursor (default)
                 index_tip = right_hand.landmark[8]
                 x, y = int(index_tip.x * self.width), int(index_tip.y * self.height)
                 self.cursor_pos = (x, y)
+                self.active_control_hand = "right"
+                
+                # Update hand trail
+                self.hand_trail.append((x, y))
+                if len(self.hand_trail) > 20:
+                    self.hand_trail.pop(0)
+                
+                # Update confidence
+                self.hand_confidence = 0.9
+                
+                # Hand position for painting
+                hand_position = [x, y, right_hand.landmark[0].z]
+                
+                return (x, y), self.right_hand_landmarks, hand_position
+            
+            # If menu is already activated, keep it open and handle control
+            elif self.menu_activated:
+                # Check which hand is open for menu control
+                # If left hand is closed (fist) and right hand is open (index finger extended)
+                if left_fist and not right_fist:
+                    # Use right hand index finger for color selection
+                    index_tip = right_hand.landmark[8]
+                    x, y = int(index_tip.x * self.width), int(index_tip.y * self.height)
+                    self.cursor_pos = (x, y)
+                    self.active_control_hand = "right"  # For color selection
+                # If right hand is closed (fist) and left hand is open (index finger extended)
+                elif right_fist and not left_fist:
+                    # Use left hand index finger for tool selection
+                    index_tip = left_hand.landmark[8]
+                    x, y = int(index_tip.x * self.width), int(index_tip.y * self.height)
+                    self.cursor_pos = (x, y)
+                    self.active_control_hand = "left"  # For tool selection
+                else:
+                    # Both hands open or other combinations - keep menu open but use right hand
+                    index_tip = right_hand.landmark[8]
+                    x, y = int(index_tip.x * self.width), int(index_tip.y * self.height)
+                    self.cursor_pos = (x, y)
+                    self.active_control_hand = "right"
                 
                 # Update hand trail
                 self.hand_trail.append((x, y))
@@ -1437,6 +1539,7 @@ class AirPainterUI:
                 
                 return (x, y), self.right_hand_landmarks, hand_position
             else:
+                # Menu not activated, don't show menus
                 self.show_circular_menus = False
         
         # Single hand mode (original logic)
@@ -1509,12 +1612,12 @@ class AirPainterUI:
         screen_center_x = self.width // 2
         screen_center_y = self.height // 2
         
-        # Left menu (tools) - slightly left of center
-        left_menu_x = screen_center_x - 200
+        # Left menu (tools) - further left of center (2.5x more spacing)
+        left_menu_x = screen_center_x - 500  # Increased from 200 to 500
         left_menu_y = screen_center_y
         
-        # Right menu (colors) - slightly right of center
-        right_menu_x = screen_center_x + 200
+        # Right menu (colors) - further right of center (2.5x more spacing)
+        right_menu_x = screen_center_x + 500  # Increased from 200 to 500
         right_menu_y = screen_center_y
         
         # Draw left hand tools menu
@@ -1535,7 +1638,11 @@ class AirPainterUI:
         angle_step = 2 * np.pi / num_tools
         
         # Get hand position for circular motion detection
-        hand_pos = self.right_hand_pos if self.right_hand_pos else self.cursor_pos
+        # For tools menu, use left hand when it's the active control hand
+        if self.active_control_hand == "left" and self.left_hand_pos:
+            hand_pos = self.left_hand_pos
+        else:
+            hand_pos = self.right_hand_pos if self.right_hand_pos else self.cursor_pos
         
         for i, tool in enumerate(tools):
             angle = i * angle_step
@@ -1564,16 +1671,18 @@ class AirPainterUI:
                     element_id = f"circular_tool_{tool.name.lower()}"
                     self.update_hover_progress(element_id)
                     
-                    # Draw selection indicator
+                    # Draw beautiful circular progress indicator
                     progress = self.hover_progress
                     if progress > 0:
-                        indicator_radius = int(current_radius + 5 * progress)
-                        pygame.draw.circle(self.screen, self.ui_colors['success'], (button_x, button_y), indicator_radius, 3)
+                        self.draw_circular_progress_indicator((button_x, button_y), current_radius, progress)
                     
                     # Check if selection is complete
                     if self.check_selection_complete(element_id):
                         self.selected_tool = tool
                         logger.info(f"Tool selected via circular menu: {tool.name}")
+                        # Close menu after selection
+                        self.show_circular_menus = False
+                        self.menu_activated = False
                 else:
                     self.reset_hover_progress(f"circular_tool_{tool.name.lower()}")
                     current_radius = self.menu_button_radius
@@ -1598,7 +1707,11 @@ class AirPainterUI:
         angle_step = 2 * np.pi / num_colors
         
         # Get hand position for circular motion detection
-        hand_pos = self.right_hand_pos if self.right_hand_pos else self.cursor_pos
+        # For colors menu, use right hand when it's the active control hand
+        if self.active_control_hand == "right" and self.right_hand_pos:
+            hand_pos = self.right_hand_pos
+        else:
+            hand_pos = self.right_hand_pos if self.right_hand_pos else self.cursor_pos
         
         for i, color in enumerate(self.colors):
             angle = i * angle_step
@@ -1627,16 +1740,18 @@ class AirPainterUI:
                     element_id = f"circular_color_{i}"
                     self.update_hover_progress(element_id)
                     
-                    # Draw selection indicator
+                    # Draw beautiful circular progress indicator
                     progress = self.hover_progress
                     if progress > 0:
-                        indicator_radius = int(current_radius + 5 * progress)
-                        pygame.draw.circle(self.screen, self.ui_colors['success'], (button_x, button_y), indicator_radius, 3)
+                        self.draw_circular_progress_indicator((button_x, button_y), current_radius, progress)
                     
                     # Check if selection is complete
                     if self.check_selection_complete(element_id):
                         self.selected_color = color
                         logger.info(f"Color selected via circular menu: {color.name}")
+                        # Close menu after selection
+                        self.show_circular_menus = False
+                        self.menu_activated = False
                 else:
                     self.reset_hover_progress(f"circular_color_{i}")
                     current_radius = self.menu_button_radius
