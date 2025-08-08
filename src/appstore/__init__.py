@@ -1132,9 +1132,11 @@ class AppStore:
                     # --- Pygame Event Handling ---
                     for event in pygame.event.get():
                         if event.type == pygame.QUIT:
+                            print("[DEBUG] Shutdown triggered by pygame.QUIT event.")
                             self.shutting_down = True
                         elif event.type == pygame.KEYDOWN:
                             if event.key == pygame.K_q or event.key == pygame.K_ESCAPE:
+                                print(f"[DEBUG] Shutdown triggered by key: {event.key}")
                                 self.shutting_down = True
                             elif event.key == pygame.K_f:
                                 self.toggle_fullscreen()
@@ -1163,12 +1165,14 @@ class AppStore:
                         event='main_loop_exception'
                     )
                     print(f"❌ Error in main loop: {e}")
+                    traceback.print_exc()
                     break
             self.cleanup()
 
     def cleanup(self):
         """Clean up resources"""
         print("🧹 Cleaning up...")
+        print("[DEBUG] Shutdown triggered by cleanup() call.")
         self.shutting_down = True
         
         if self.cap:
